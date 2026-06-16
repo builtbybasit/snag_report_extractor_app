@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'dart:ui' as ui;
 import 'package:flutter/painting.dart' as ui;
 import 'dart:typed_data';
+import 'package:image/image.dart' as img;
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/directory_manager.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/pdf_worker.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/pdf_extractor_state.dart';
@@ -154,7 +155,7 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
             final rendered = await _renderImageWithCaption(bytes, caption);
             final outputBytes = await _imageToBytes(rendered);
 
-            final file = File("$outputDir/image_$count.png");
+            final file = File("$outputDir/image_$count.jpg");
             await file.writeAsBytes(outputBytes);
 
             talker.debug(
@@ -197,10 +198,21 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     }
   }
 
-  /// Convert ui.Image to PNG bytes
+  /// Encode the composed ui.Image as JPEG.
+  ///
+  /// The content is a photo plus a solid white caption strip (no transparency),
+  /// so JPEG is far smaller than PNG with no meaningful quality loss. dart:ui
+  /// can't emit JPEG, so we pull raw RGBA and encode via the `image` package.
   Future<Uint8List> _imageToBytes(ui.Image image) async {
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    return byteData!.buffer.asUint8List();
+    final byteData =
+        await image.toByteData(format: ui.ImageByteFormat.rawRgba);
+    final rgba = img.Image.fromBytes(
+      width: image.width,
+      height: image.height,
+      bytes: byteData!.buffer,
+      numChannels: 4,
+    );
+    return img.encodeJpg(rgba, quality: 90);
   }
 
   String wrapCaption(String text, {int maxChars = 30}) {
