@@ -2,6 +2,7 @@ name: snag_report_extractor_app
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
@@ -18,42 +19,43 @@ description: "A new Flutter project."
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.8.1
-  flutter: ">=1.17.0"
+  sdk: ^3.12.2
 
 dependencies:
   flutter:
     sdk: flutter
 
+  cupertino_icons: ^1.0.9
   directory_bookmarks:
     path: plugins/directory_bookmarks
   ffi: ^2.1.4
   path: ^1.9.1
-  image: ^4.5.4
-  saf_stream: ^0.12.0
-  saf_util: ^0.11.0
-  desktop_drop: ^0.6.1
-  file_picker: ^10.3.0
-  flutter_riverpod: ^2.6.1
-  hooks_riverpod: ^2.6.1
-  go_router: ^16.1.0
-  shared_preferences: ^2.5.3
-  path_provider: ^2.1.5
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
+  image: ^4.8.0
+  saf_stream: ^3.0.0
+  saf_util: ^3.1.0
+  desktop_drop: ^0.7.1
+  file_picker: ^11.0.2
+  flutter_riverpod: ^3.3.2
+  hooks_riverpod: ^3.3.2
+  go_router: ^17.3.0
+  shared_preferences: ^2.5.5
+  path_provider: ^2.1.6
   flutter_json_view: ^1.1.5
-  alert_info: ^0.0.6
-  talker_flutter: ^5.0.0
+  alert_info: ^0.0.8
+  talker_flutter: ^5.1.16
+  rename_app: ^1.6.6
+  # Vendored locally so we can fix/extend it (image filter-chain decode,
+  # image bbox, ToUnicode text decoding). Upstream is MIT-licensed.
+  dart_mupdf_donut:
+    path: packages/dart_mupdf_donut
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
 
-  flutter_lints: ^5.0.0
-  ffigen: ^19.1.0
+  flutter_lints: ^6.0.0
+  ffigen: ^20.1.1
   flutter_launcher_icons: ^0.14.4
-  rename_app: ^1.6.5
 
 flutter_launcher_icons:
   android: false

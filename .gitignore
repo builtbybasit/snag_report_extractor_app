@@ -51,4 +51,18 @@ clib/mupdf/
 
 dmg-staging
 
+# Private sample PDFs (contain real inspection data)
 assets/sample.pdf
+assets/sample_compressed.pdf
+
+# Scratch output from the dart_mupdf spike tools (tool/*.dart are kept)
+tool/spike_out/
+
+# Certificates / private keys — never commit
+MySelfSignedCert.*
+*.crt
+*.csr
+*.key
+*.pem
+*.p12
+*.keystore

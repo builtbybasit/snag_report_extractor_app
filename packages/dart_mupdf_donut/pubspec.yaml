@@ -1,0 +1,43 @@
+name: dart_mupdf_donut
+description: >-
+  A comprehensive pure Dart PDF library with OCR-free document understanding.
+  Combines PyMuPDF-inspired PDF parsing (text/image extraction, annotations,
+  page manipulation, PDF creation) with a Donut (Swin + BART) transformer
+  for structured receipt, invoice, and form extraction from images.
+  No native dependencies — works on all platforms.
+version: 1.0.0
+homepage: https://github.com/proethiopia/dart-mupdf-donut
+repository: https://github.com/proethiopia/dart-mupdf-donut
+issue_tracker: https://github.com/proethiopia/dart-mupdf-donut/issues
+documentation: https://github.com/proethiopia/dart-mupdf-donut#readme
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  archive: ^4.0.2
+  crypto: ^3.0.6
+  xml: ^6.5.0
+  image: ^4.3.0
+  collection: ^1.19.0
+  path: ^1.9.0
+  pointycastle: ^3.9.1
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0
+
+topics:
+  - pdf
+  - ocr
+  - document-understanding
+  - text-extraction
+  - machine-learning
+
+platforms:
+  android:
+  ios:
+  linux:
+  macos:
+  web:
+  windows:

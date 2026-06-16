@@ -12,11 +12,14 @@ import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/direct
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/pdf_worker.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/pdf_extractor_state.dart';
 import 'package:snag_report_extractor_app/src/logging/talker.dart';
-class PdfExtractorScreenController extends StateNotifier<PdfExtractorState> {
-  final DirectoryManager directoryManager;
+class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
+  late final DirectoryManager directoryManager;
 
-  PdfExtractorScreenController({required this.directoryManager})
-    : super(PdfExtractorState());
+  @override
+  PdfExtractorState build() {
+    directoryManager = ref.read(directoryManagerProvider.notifier);
+    return PdfExtractorState();
+  }
 
   void startDragging() {
     talker.debug("Dragging started");
@@ -286,11 +289,6 @@ class PdfExtractorScreenController extends StateNotifier<PdfExtractorState> {
 }
 
 final pdfExtractorScreenControllerProvider =
-    StateNotifierProvider<PdfExtractorScreenController, PdfExtractorState>((
-      ref,
-    ) {
-      final DirectoryManager directoryManager = ref.read(
-        directoryManagerProvider.notifier,
-      );
-      return PdfExtractorScreenController(directoryManager: directoryManager);
-    });
+    NotifierProvider<PdfExtractorScreenController, PdfExtractorState>(
+  PdfExtractorScreenController.new,
+);

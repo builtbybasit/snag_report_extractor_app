@@ -4,7 +4,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../constants/app_sizes.dart';
 
 final textDirectionProvider =
-    StateProvider<TextDirection>((ref) => TextDirection.ltr);
+    NotifierProvider<TextDirectionNotifier, TextDirection>(
+  TextDirectionNotifier.new,
+);
+
+class TextDirectionNotifier extends Notifier<TextDirection> {
+  @override
+  TextDirection build() => TextDirection.ltr;
+
+  void toggle() {
+    state =
+        state == TextDirection.ltr ? TextDirection.rtl : TextDirection.ltr;
+  }
+}
 
 class SpecialTextField extends ConsumerWidget {
   const SpecialTextField({super.key, final labelText});
@@ -16,10 +28,7 @@ class SpecialTextField extends ConsumerWidget {
     final textDirection = ref.watch(textDirectionProvider);
 
     void toggleTextDirection() {
-      ref.read(textDirectionProvider.notifier).state =
-          textDirection == TextDirection.ltr
-              ? TextDirection.rtl
-              : TextDirection.ltr;
+      ref.read(textDirectionProvider.notifier).toggle();
     }
 
     return Padding(

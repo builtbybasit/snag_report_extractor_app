@@ -78,7 +78,7 @@ class PdfExtractorScreen extends ConsumerWidget {
               },
               child: GestureDetector(
                 onTap: () async {
-                  final result = await FilePicker.platform.pickFiles(
+                  final result = await FilePicker.pickFiles(
                     type: FileType.custom,
                     allowedExtensions: ['pdf'],
                     allowMultiple: true,

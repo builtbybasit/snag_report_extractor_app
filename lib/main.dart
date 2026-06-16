@@ -17,7 +17,16 @@ void main() async {
       usePathUrlStrategy();
       // setup the executor for background tasks
       // * Entry point for the app
-      runApp(const ProviderScope(child: MyApp()));
+      runApp(
+        ProviderScope(
+          // Riverpod 3 enables automatic retry-on-error by default. Our
+          // FutureProviders intentionally throw on missing files/dirs, so we
+          // opt out of retries to surface those errors immediately instead of
+          // looping. Re-enable per-provider where a retry is actually wanted.
+          retry: (retryCount, error) => null,
+          child: const MyApp(),
+        ),
+      );
 
       // * This code will present some error UI if any uncaught exception happens
       FlutterError.onError = (FlutterErrorDetails details) {

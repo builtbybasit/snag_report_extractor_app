@@ -1,4 +1,3 @@
-import 'dart:developer';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -88,12 +87,14 @@ class DocumentFile {
       lastModified.hashCode;
 }
 
-class DirectoryManager extends StateNotifier<String?> {
+class DirectoryManager extends Notifier<String?> {
   final _safUtilPlugin = SafUtil();
   final _safStreamPlugin = SafStream();
 
-  DirectoryManager() : super(null) {
+  @override
+  String? build() {
     _loadSavedDirectory();
+    return null;
   }
 
   String _normalizePath(String path) {
@@ -170,7 +171,7 @@ class DirectoryManager extends StateNotifier<String?> {
           directory = dir.uri;
         }
       } else {
-        directory = await FilePicker.platform.getDirectoryPath();
+        directory = await FilePicker.getDirectoryPath();
       }
       if (directory != null) {
         await _saveBookmark(directory);
@@ -330,9 +331,7 @@ class DirectoryManager extends StateNotifier<String?> {
 }
 
 final directoryManagerProvider =
-    StateNotifierProvider<DirectoryManager, String?>((ref) {
-  return DirectoryManager();
-});
+    NotifierProvider<DirectoryManager, String?>(DirectoryManager.new);
 
 final readFileStringFutureProvider =
     FutureProvider.family<String?, String>((ref, path) {
