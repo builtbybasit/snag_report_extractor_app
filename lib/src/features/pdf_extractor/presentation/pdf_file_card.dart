@@ -20,6 +20,11 @@ class PdfFileCard extends StatelessWidget {
   /// File size in bytes, appended to the subtitle when available.
   final int? sizeBytes;
 
+  /// Index of this card in the reorderable queue. When non-null, a grab handle
+  /// is rendered flush on the card's left border for drag-to-reorder. Null
+  /// renders no handle (e.g. when the card is used outside a reorderable list).
+  final int? reorderIndex;
+
   const PdfFileCard({
     super.key,
     required this.file,
@@ -29,6 +34,7 @@ class PdfFileCard extends StatelessWidget {
     this.addedAt,
     this.sizeBytes,
     this.onDelete,
+    this.reorderIndex,
   });
 
   @override
@@ -39,7 +45,8 @@ class PdfFileCard extends StatelessWidget {
 
     final done = p?.done == true && p?.error == null;
     final failed = p?.error != null;
-    final processing = p != null && !p.done && p.error == null;
+    final paused = p?.paused == true && p?.done != true && p?.error == null;
+    final processing = p != null && !p.done && p.error == null && !paused;
 
     final progressRatio = (p != null && p.error == null && p.totalPages > 0)
         ? (p.currentPage / p.totalPages).clamp(0.0, 1.0)
@@ -60,9 +67,12 @@ class PdfFileCard extends StatelessWidget {
         ? "${p?.currentImage ?? 0} / $totalImages"
         : (imageCount == null ? "Counting…" : "—");
 
+    const handleWidth = 28.0;
+    final hasHandle = reorderIndex != null;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: theme.cardColor,
         borderRadius: BorderRadius.circular(14),
@@ -77,9 +87,85 @@ class PdfFileCard extends StatelessWidget {
                 ),
               ],
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      // Stack rather than a stretched Row: the non-positioned body defines the
+      // card's height and the handle is stretched to it via top/bottom: 0, which
+      // always yields bounded constraints — a stretched Row root can hit
+      // unbounded-height constraints inside the reorder drag overlay and hang.
+      child: Stack(
         children: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(hasHandle ? handleWidth + 12 : 16, 16,
+                16, 16),
+            child: _cardBody(context, done, failed, processing, paused,
+                progressRatio, percent, pagesValue, imagesValue),
+          ),
+          if (hasHandle)
+            Positioned(
+              left: 0,
+              top: 0,
+              bottom: 0,
+              width: handleWidth,
+              child: _dragHandle(context, isDark),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// A full-height grab strip on the card's left border: a dotted grip painted
+  /// down the edge, wrapped in a [ReorderableDragStartListener] so dragging it
+  /// reorders the queue.
+  Widget _dragHandle(BuildContext context, bool isDark) {
+    final theme = Theme.of(context);
+    return ReorderableDragStartListener(
+      index: reorderIndex!,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.03)
+                : const Color(0xFFF9FAFB),
+            // Round the outer-left corners to match the card so the strip color
+            // fills the card's left border radius instead of leaving a notch.
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(14),
+              bottomLeft: Radius.circular(14),
+            ),
+            border: Border(
+              right: BorderSide(
+                color: theme.dividerColor.withValues(alpha: 0.6),
+              ),
+            ),
+          ),
+          child: CustomPaint(
+            painter: DottedGripPainter(
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.55),
+            ),
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _cardBody(
+    BuildContext context,
+    bool done,
+    bool failed,
+    bool processing,
+    bool paused,
+    double progressRatio,
+    int percent,
+    String pagesValue,
+    String imagesValue,
+  ) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final p = progress;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
           // Header: thumbnail + name + timestamp + delete
           Row(
             children: [
@@ -141,7 +227,9 @@ class PdfFileCard extends StatelessWidget {
           // Stat boxes
           Row(
             children: [
-              Expanded(child: _statusBox(context, done, failed, processing)),
+              Expanded(
+                child: _statusBox(context, done, failed, processing, paused),
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: _statBox(
@@ -173,7 +261,9 @@ class PdfFileCard extends StatelessWidget {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(8),
                   child: LinearProgressIndicator(
-                    value: processing && p.totalPages == 0 ? null : progressRatio,
+                    value: processing && (p?.totalPages ?? 0) == 0
+                        ? null
+                        : progressRatio,
                     minHeight: 8,
                     backgroundColor: isDark
                         ? Colors.white.withValues(alpha: 0.08)
@@ -196,8 +286,7 @@ class PdfFileCard extends StatelessWidget {
             ],
           ),
         ],
-      ),
-    );
+      );
   }
 
   String _subtitle() {
@@ -224,12 +313,14 @@ class PdfFileCard extends StatelessWidget {
     return "$bytes B";
   }
 
-  /// First box reflects overall status (queue / processing / complete / failed).
+  /// First box reflects overall status (queue / processing / paused / complete /
+  /// failed).
   Widget _statusBox(
     BuildContext context,
     bool done,
     bool failed,
     bool processing,
+    bool paused,
   ) {
     if (failed) {
       return _statBox(context, Colors.red, Icons.error_outline, "Failed", null);
@@ -240,6 +331,15 @@ class PdfFileCard extends StatelessWidget {
         Colors.green,
         Icons.check_circle_outline,
         "Complete",
+        null,
+      );
+    }
+    if (paused) {
+      return _statBox(
+        context,
+        Colors.orange,
+        Icons.pause_circle_outline,
+        "Paused",
         null,
       );
     }
@@ -319,4 +419,41 @@ class PdfFileCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Paints the two-column dotted "grip" used on each card's reorder handle.
+/// The dot column is centred vertically within the available height.
+class DottedGripPainter extends CustomPainter {
+  final Color color;
+
+  const DottedGripPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    // A 2-column × 6-row grip, centred in the strip — the universal "grab to
+    // drag" affordance, rather than a full-height run of dots.
+    const dotRadius = 1.8;
+    const colGap = 7.0;
+    const rowGap = 7.0;
+    const rows = 5;
+
+    final cx = size.width / 2;
+    final col1X = cx - colGap / 2;
+    final col2X = cx + colGap / 2;
+    final startY = (size.height - (rows - 1) * rowGap) / 2;
+
+    for (var r = 0; r < rows; r++) {
+      final y = startY + r * rowGap;
+      canvas.drawCircle(Offset(col1X, y), dotRadius, paint);
+      canvas.drawCircle(Offset(col2X, y), dotRadius, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant DottedGripPainter oldDelegate) =>
+      oldDelegate.color != color;
 }

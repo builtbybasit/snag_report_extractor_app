@@ -47,17 +47,7 @@ class PdfExtractorScreen extends ConsumerWidget {
                 if (state.files.isNotEmpty) ...[
                   _queueHeader(context, ref, state),
                   gapH12,
-                  ...state.items.values.map((item) {
-                    return PdfFileCard(
-                      file: item.file,
-                      progress: item.progress,
-                      imageCount: item.imageCount,
-                      pageCount: item.pageCount,
-                      addedAt: item.addedAt,
-                      sizeBytes: item.sizeBytes,
-                      onDelete: () => controller.removeFromQueue(item.file),
-                    );
-                  }),
+                  _queueList(context, controller, state),
                   gapH16,
                 ],
                 _bottomBar(context, ref, controller, state, directoryManager),
@@ -67,6 +57,53 @@ class PdfExtractorScreen extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Queue list (reorderable)
+  // ---------------------------------------------------------------------------
+
+  /// The queue rendered as a reorderable list. Each row carries a grip handle on
+  /// its left edge (grab-to-drag); dragging a file changes its processing order,
+  /// and dragging the file that's currently extracting below another pending
+  /// file pauses it (it resumes when it returns to the top).
+  Widget _queueList(
+    BuildContext context,
+    PdfExtractorScreenController controller,
+    PdfExtractorState state,
+  ) {
+    final items = state.items.values.toList();
+
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      primary: false,
+      physics: const NeverScrollableScrollPhysics(),
+      buildDefaultDragHandles: false,
+      itemCount: items.length,
+      // The default proxy wraps the dragged item in an opaque (white) Material;
+      // use a transparent one so the card keeps its own rounded background while
+      // being dragged.
+      proxyDecorator: (child, index, animation) =>
+          Material(type: MaterialType.transparency, child: child),
+      // ignore: deprecated_member_use
+      onReorder: controller.reorderQueue,
+      itemBuilder: (context, i) {
+        final item = items[i];
+        // The grab handle lives on the card's left border (see PdfFileCard);
+        // reorderIndex wires it to this list's drag listener.
+        return PdfFileCard(
+          key: ValueKey(item.file.path),
+          reorderIndex: i,
+          file: item.file,
+          progress: item.progress,
+          imageCount: item.imageCount,
+          pageCount: item.pageCount,
+          addedAt: item.addedAt,
+          sizeBytes: item.sizeBytes,
+          onDelete: () => controller.removeFromQueue(item.file),
+        );
+      },
     );
   }
 

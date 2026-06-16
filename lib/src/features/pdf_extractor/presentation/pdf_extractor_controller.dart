@@ -26,6 +26,11 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
   /// isolate to close its port, which is what made cancellation flaky before.
   final Map<String, Completer<void>> _cancelTokens = {};
 
+  /// Paths whose cancel token was completed for a *pause* (reordered below
+  /// another pending file) rather than a removal. The processing loop checks
+  /// this to keep the partial output and resume checkpoint instead of deleting.
+  final Set<String> _pauseRequested = {};
+
   @override
   PdfExtractorState build() {
     directoryManager = ref.read(directoryManagerProvider.notifier);
@@ -80,6 +85,74 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     return newFiles.length;
   }
 
+  /// Reorders the queue by moving the item at [oldIndex] to [newIndex] (indices
+  /// into the visible, insertion-ordered list). Wired to `onReorder`, which
+  /// reports [newIndex] as if the moved item were still present, so a downward
+  /// move overshoots by one. If extraction is running and the file currently
+  /// being extracted is no longer the top pending item after the move, it is
+  /// paused so the loop switches to the new top; the paused file resumes from
+  /// its checkpoint once it returns to the top.
+  void reorderQueue(int oldIndex, int newIndex) {
+    final entries = state.items.entries.toList();
+    if (oldIndex < 0 || oldIndex >= entries.length) return;
+    if (newIndex > oldIndex) newIndex -= 1;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex >= entries.length) newIndex = entries.length - 1;
+    if (newIndex == oldIndex) return;
+
+    final moved = entries.removeAt(oldIndex);
+    entries.insert(newIndex, moved);
+    state = state.copyWith(items: {for (final e in entries) e.key: e.value});
+
+    _maybePauseReorderedActive();
+  }
+
+  /// Path of the file currently being extracted, or `null`. Extraction is
+  /// sequential, so there is at most one active port.
+  String? get _activePath =>
+      _activePorts.keys.isEmpty ? null : _activePorts.keys.first;
+
+  /// The first item that still needs extracting (not done, not failed), in
+  /// queue order — this is the file the drain loop will pick next.
+  String? get _topPendingPath {
+    for (final entry in state.items.entries) {
+      final p = entry.value.progress;
+      if (p?.done == true || p?.error != null) continue;
+      return entry.key;
+    }
+    return null;
+  }
+
+  /// If the file being extracted has been reordered below another pending file,
+  /// pause it so the loop can start the new top item.
+  void _maybePauseReorderedActive() {
+    if (!state.isProcessing) return;
+    final active = _activePath;
+    if (active == null) return;
+    final top = _topPendingPath;
+    if (top != null && top != active) _pauseActive(active);
+  }
+
+  /// Stops the running isolate for [filePath] and marks it paused, preserving
+  /// its partial output and resume checkpoint. Completing the cancel token
+  /// unblocks the processing loop's wait so it can move to the next file.
+  void _pauseActive(String filePath) {
+    final item = state.items[filePath];
+    final progress = item?.progress;
+    if (item == null || progress == null) return;
+    talker.info("Pausing ${progress.fileName} (reordered below another file)");
+
+    _pauseRequested.add(filePath);
+    state = state.copyWith(items: {
+      ...state.items,
+      filePath: item.copyWith(progress: progress.copyWith(paused: true)),
+    });
+
+    progress.isolate?.kill(priority: Isolate.immediate);
+    final token = _cancelTokens[filePath];
+    if (token != null && !token.isCompleted) token.complete();
+  }
+
   /// File size in bytes via a cheap stat, or `null` if it can't be read.
   int? _fileSize(String path) {
     try {
@@ -130,10 +203,14 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     final progress = state.items[file.path]?.progress;
     talker.info("Removing file from queue: ${file.name}");
 
-    final inFlight = progress?.isolate != null && progress?.done == false;
+    // "In flight" means the drain loop is actively extracting this file right
+    // now (it owns an active port). A paused file holds a dead isolate ref but
+    // is NOT in flight, so its partial folder must be deleted here rather than
+    // left for the loop.
+    final inFlight = _activePorts.containsKey(file.path);
     if (inFlight) {
       talker.warning("Killing isolate for file: ${file.name}");
-      progress?.isolate!.kill(priority: Isolate.immediate);
+      progress?.isolate?.kill(priority: Isolate.immediate);
     }
 
     // Completing the cancel token instantly unblocks the processing loop for
@@ -235,25 +312,34 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
 
       state = state.copyWith(isProcessing: true, errors: []);
 
-      // Snapshot the queue so removing a file mid-run doesn't disturb iteration.
-      for (final file in [...state.files]) {
+      // Drain the live queue rather than a one-time snapshot: re-read it each
+      // iteration so files added mid-run are picked up automatically, files
+      // removed mid-run simply stop being selected, and already-done/failed
+      // files are skipped by the selector below.
+      while (true) {
+        QueuedPdf? next;
+        for (final item in state.items.values) {
+          final progress = item.progress;
+          if (progress?.done == true || progress?.error != null) continue;
+          next = item;
+          break;
+        }
+        if (next == null) break; // queue fully drained
+
+        final file = next.file;
         final fileName = file.name;
         final filePath = file.path;
 
-        // Skip files removed from the queue since processing started.
-        if (!state.items.containsKey(filePath)) {
-          talker.debug("Skipping $fileName (removed from queue)");
-          continue;
-        }
-
-        if (state.items[filePath]?.progress?.done == true) {
-          talker.debug("Skipping $fileName (already processed)");
-          // already processed this file
-          continue;
-        }
-
-        final outputDir = await _resolveOutputDir(outputRoot, filePath);
-        talker.info("Processing file: $fileName -> $outputDir");
+        // A paused file resumes into its existing folder (already holds the
+        // images written before the pause); a fresh file gets a new folder.
+        final resuming = next.progress?.paused == true &&
+            next.progress?.outputDir != null;
+        final outputDir = resuming
+            ? next.progress!.outputDir!
+            : await _resolveOutputDir(outputRoot, filePath);
+        talker.info(
+          "${resuming ? 'Resuming' : 'Processing'} file: $fileName -> $outputDir",
+        );
 
         final cancelled = await _extractFile(filePath, fileName, outputDir);
 
@@ -271,6 +357,7 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
       talker.info("Processing finished");
       _activePorts.clear();
       _cancelTokens.clear();
+      _pauseRequested.clear();
       state = state.copyWith(isProcessing: false, currentFile: null);
     }
   }
@@ -317,28 +404,47 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     _activePorts[filePath] = receivePort;
     _cancelTokens[filePath] = cancelToken;
 
+    // Resume support: a paused file already has images written up to
+    // currentImage, so tell the worker to skip re-sending those and keep the
+    // counters in the UI rather than resetting to a fresh run.
+    final resumed = state.items[filePath]?.progress;
+    final isResume = resumed != null && resumed.paused;
+    final resumeFromImage = isResume ? resumed.currentImage : 0;
+
     final isolate = await Isolate.spawn(extractPdfWorker, {
       "sendPort": receivePort.sendPort,
       "path": filePath,
       "outputDir": outputDir,
+      "resumeFromImage": resumeFromImage,
     });
 
     // The file may have been removed while the isolate was spawning.
     _patchItem(
       filePath,
-      (item) => item.copyWith(
-        progress: PdfFileProgress(
-          fileName: fileName,
-          outputDir: outputDir,
-          isolate: isolate,
-        ),
-      ),
+      (item) {
+        final base = item.progress;
+        // Resuming: keep the existing counters, attach the new isolate, and
+        // clear the paused flag. Fresh start: a brand-new progress record.
+        if (isResume && base != null) {
+          return item.copyWith(
+            progress: base.copyWith(isolate: isolate, paused: false),
+          );
+        }
+        return item.copyWith(
+          progress: PdfFileProgress(
+            fileName: fileName,
+            outputDir: outputDir,
+            isolate: isolate,
+          ),
+        );
+      },
     );
 
     final iterator = StreamIterator<PdfWorkerMessage>(
       receivePort.cast<PdfWorkerMessage>(),
     );
     var cancelled = false;
+    var paused = false;
     try {
       while (true) {
         final hasNext = await Future.any<bool>([
@@ -347,6 +453,7 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
         ]);
         if (cancelToken.isCompleted) {
           cancelled = true;
+          paused = _pauseRequested.contains(filePath);
           break;
         }
         if (!hasNext) break; // worker finished and closed its port
@@ -380,6 +487,9 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
             return cancelled;
 
           case PageProgress(:final page, :final pageCount):
+            // On resume the worker re-walks pages from the start; don't let the
+            // progress bar rewind past where it already was.
+            if (page < currentProgress.currentPage) break;
             talker.debug("[$fileName] Processed page $page/$pageCount");
             _patchItem(
               filePath,
@@ -400,11 +510,14 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
             final rendered = await _renderImageWithCaption(bytes, caption);
             final outputBytes = await _imageToBytes(rendered);
 
-            // Removed while rendering — don't write into a deleted folder.
+            // Cancelled/paused/removed while rendering — don't write into a
+            // folder that may be getting deleted, and preserve the checkpoint
+            // if this was a pause.
             if (cancelToken.isCompleted ||
                 state.items[filePath]?.progress == null) {
               cancelled = true;
-              return cancelled;
+              paused = _pauseRequested.contains(filePath);
+              return paused ? false : cancelled;
             }
 
             final imageFile = File("$outputDir/image_$imgCount.jpg");
@@ -448,9 +561,12 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
       receivePort.close();
       _activePorts.remove(filePath);
       _cancelTokens.remove(filePath);
+      _pauseRequested.remove(filePath);
     }
 
-    return cancelled;
+    // A pause keeps its partial output and checkpoint, so report it as "not
+    // cancelled" to the loop, which then leaves the folder in place.
+    return paused ? false : cancelled;
   }
 
   /// Encode the composed ui.Image as JPEG.

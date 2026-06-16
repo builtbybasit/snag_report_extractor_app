@@ -22,6 +22,11 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
   final String path = data["path"];
   final String outputDir = data["outputDir"];
 
+  // Resume checkpoint: images whose sequential number is <= this were already
+  // extracted and written by a previous (paused) run, so we re-walk the document
+  // to keep the counter aligned but skip re-sending them. 0 means a fresh run.
+  final int resumeFromImage = (data["resumeFromImage"] as int?) ?? 0;
+
   MuPdfRepository? repo;
   try {
     repo = MuPdfRepository.openFile(path);
@@ -66,8 +71,14 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
         final bytes = _encodedImageBytes(extracted);
         if (bytes == null) continue;
 
+        // Counter must advance for every successfully extracted image so the
+        // sequence matches the original run; only the *send* is skipped for
+        // images already written before the pause.
+        final n = imageCounter++;
+        if (n <= resumeFromImage) continue;
+
         sendPort.send(
-          ImageExtracted(bytes, caption, imageCounter++, totalImages),
+          ImageExtracted(bytes, caption, n, totalImages),
         );
       }
     }

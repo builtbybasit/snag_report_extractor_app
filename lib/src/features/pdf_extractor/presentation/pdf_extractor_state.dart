@@ -12,6 +12,13 @@ class PdfFileProgress {
   final String? outputDir;
   final bool done;
   final String? error;
+
+  /// True when extraction for this file was paused (its isolate stopped) because
+  /// it was reordered below another pending file. [currentImage] is the resume
+  /// checkpoint: already-written images are `image_1.jpg … image_{currentImage}.jpg`,
+  /// so resuming re-spawns the worker with `resumeFromImage: currentImage`.
+  final bool paused;
+
   /// Timestamp when this file started processing
   final Isolate? isolate;
 
@@ -28,6 +35,7 @@ class PdfFileProgress {
     this.outputDir,
     this.done = false,
     this.error,
+    this.paused = false,
     this.isolate,
     List<int>? pageDurations,
     this.lastPageTime,
@@ -43,6 +51,7 @@ class PdfFileProgress {
     bool? done,
     String? outputDir,
     String? error,
+    bool? paused,
     Isolate? isolate,
     List<int>? pageDurations,
     DateTime? lastPageTime,
@@ -56,6 +65,7 @@ class PdfFileProgress {
       done: done ?? this.done,
       outputDir: outputDir ?? this.outputDir,
       error: error ?? this.error,
+      paused: paused ?? this.paused,
       isolate: isolate ?? this.isolate,
       pageDurations: pageDurations ?? List.from(this.pageDurations),
       lastPageTime: lastPageTime ?? this.lastPageTime,
