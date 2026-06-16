@@ -323,9 +323,11 @@ class PdfExtractorScreen extends ConsumerWidget {
           child: Container(
             height: 220,
             decoration: BoxDecoration(
+              // Subtle always-on fill so the drop area reads as a distinct
+              // panel against the page, deepening while a file is dragged over.
               color: state.isDragging
-                  ? accent.withValues(alpha: 0.05)
-                  : Colors.transparent,
+                  ? accent.withValues(alpha: isDark ? 0.12 : 0.07)
+                  : accent.withValues(alpha: isDark ? 0.05 : 0.03),
               borderRadius: BorderRadius.circular(16),
             ),
             child: Center(
