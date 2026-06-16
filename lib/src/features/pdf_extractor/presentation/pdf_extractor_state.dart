@@ -94,44 +94,98 @@ class PdfFileProgress {
 
 }
 
+/// A single PDF in the queue, bundling its [DropItem] with all per-file state
+/// (pre-scan counts, extraction progress, and when it was added). Replaces the
+/// former parallel maps keyed by file path.
+class QueuedPdf {
+  final DropItem file;
+
+  /// When the file was added to the queue. Drives the "Added … ago" subtitle.
+  final DateTime addedAt;
+
+  /// File size in bytes, or `null` if it couldn't be determined.
+  final int? sizeBytes;
+
+  /// Pre-scan total page count: `null` = still counting, `-1` = count failed,
+  /// `>= 0` = number of pages.
+  final int? pageCount;
+
+  /// Pre-scan image count (same value semantics as [pageCount]).
+  final int? imageCount;
+
+  /// Extraction progress; `null` until extraction starts for this file.
+  final PdfFileProgress? progress;
+
+  QueuedPdf({
+    required this.file,
+    required this.addedAt,
+    this.sizeBytes,
+    this.pageCount,
+    this.imageCount,
+    this.progress,
+  });
+
+  QueuedPdf copyWith({
+    int? pageCount,
+    int? imageCount,
+    PdfFileProgress? progress,
+  }) {
+    return QueuedPdf(
+      file: file,
+      addedAt: addedAt,
+      sizeBytes: sizeBytes,
+      pageCount: pageCount ?? this.pageCount,
+      imageCount: imageCount ?? this.imageCount,
+      progress: progress ?? this.progress,
+    );
+  }
+}
+
 class PdfExtractorState {
   final bool isDragging;
   final bool isProcessing;
-  final List<DropItem> files;
   final DropItem? currentFile;
   final int processedFiles;
   final List<String> errors;
 
-  final Map<String, PdfFileProgress> progress;
+  /// Insertion-ordered queue keyed by file path. Dart maps preserve insertion
+  /// order, so this keeps the queue order while collapsing what used to be five
+  /// parallel structures into one.
+  final Map<String, QueuedPdf> items;
 
   PdfExtractorState({
     this.isDragging = false,
     this.isProcessing = false,
-    this.files = const [],
     this.currentFile,
     this.processedFiles = 0,
     this.errors = const [],
-    this.progress = const {},
+    this.items = const {},
   });
+
+  /// The queued files in order.
+  List<DropItem> get files => items.values.map((i) => i.file).toList();
 
   PdfExtractorState copyWith({
     bool? isDragging,
     bool? isProcessing,
-    List<DropItem>? files,
     DropItem? currentFile,
     int? processedFiles,
     List<String>? errors,
     List<String>? outputPaths,
-    Map<String, PdfFileProgress>? progress,
+    Map<String, QueuedPdf>? items,
   }) {
     return PdfExtractorState(
       isDragging: isDragging ?? this.isDragging,
       isProcessing: isProcessing ?? this.isProcessing,
-      files: files ?? this.files,
       currentFile: currentFile ?? this.currentFile,
       processedFiles: processedFiles ?? this.processedFiles,
       errors: errors ?? this.errors,
-      progress: progress ?? this.progress,
+      items: items ?? this.items,
     );
   }
+
+  /// Files whose extraction finished successfully.
+  int get completedCount => items.values
+      .where((i) => i.progress?.done == true && i.progress?.error == null)
+      .length;
 }

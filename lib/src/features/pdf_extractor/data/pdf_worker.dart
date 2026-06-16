@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dart_mupdf_donut/dart_mupdf.dart';
 import 'package:image/image.dart' as img;
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/mupdf_repository.dart';
+import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/pdf_worker_message.dart';
 
 const String _defaultCaption =
     'As Indicated by the Highlights in the picture';
@@ -11,12 +12,11 @@ const String _defaultCaption =
 /// Isolate entry point: extracts captioned snag photos from [data]["path"]
 /// using the vendored pure-Dart engine and streams them to the main isolate.
 ///
-/// Message protocol (must stay identical to the controller's expectations):
-///   {"page": int, "pageCount": int}                              progress
-///   {"imageBytes": Uint8List, "caption": String,
-///    "imgCount": int, "totalImages": int}                        one photo
-///   {"done": true, "outputDir": String}                          finished
-///   {"error": String}                                            failed
+/// Message protocol (typed [PdfWorkerMessage] subclasses):
+///   [PageProgress]     page progress
+///   [ImageExtracted]   one captioned photo
+///   [ExtractionDone]   finished
+///   [ExtractionFailed] failed
 Future<void> extractPdfWorker(Map<String, dynamic> data) async {
   final SendPort sendPort = data["sendPort"];
   final String path = data["path"];
@@ -27,7 +27,7 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
     repo = MuPdfRepository.openFile(path);
 
     final totalPages = repo.pageCount;
-    sendPort.send({"page": 0, "pageCount": totalPages});
+    sendPort.send(PageProgress(0, totalPages));
 
     // First pass: parse every page's layout up front so we can report the
     // total image count before streaming the first photo (mirrors the old
@@ -36,7 +36,9 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
       for (int i = 0; i < totalPages; i++) repo.getTextDict(i),
     ];
 
-    final totalImages = dicts.fold<int>(
+    // Skip the first page (the report cover/title page): its images must be
+    // neither counted nor extracted. `skip(1)` is safe even for a 0-page doc.
+    final totalImages = dicts.skip(1).fold<int>(
       0,
       (sum, dict) => sum + dict.blocks.where((b) => b.type == 1).length,
     );
@@ -45,7 +47,10 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
     int imageCounter = 1;
     for (int pageNo = 1; pageNo <= totalPages; pageNo++) {
       final dict = dicts[pageNo - 1];
-      sendPort.send({"page": pageNo, "pageCount": totalPages});
+      sendPort.send(PageProgress(pageNo, totalPages));
+
+      // Cover/title page: report progress but extract nothing from it.
+      if (pageNo == 1) continue;
 
       final imageBlocks = dict.blocks.where((b) => b.type == 1).toList();
       final textBlocks = dict.blocks.where((b) => b.type == 0).toList();
@@ -61,18 +66,40 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
         final bytes = _encodedImageBytes(extracted);
         if (bytes == null) continue;
 
-        sendPort.send({
-          "imageBytes": bytes,
-          "caption": caption,
-          "imgCount": imageCounter++,
-          "totalImages": totalImages,
-        });
+        sendPort.send(
+          ImageExtracted(bytes, caption, imageCounter++, totalImages),
+        );
       }
     }
 
-    sendPort.send({"done": true, "outputDir": outputDir});
+    sendPort.send(ExtractionDone(outputDir));
   } catch (e) {
-    sendPort.send({"error": e.toString()});
+    sendPort.send(ExtractionFailed(e.toString()));
+  } finally {
+    repo?.close();
+  }
+}
+
+/// Pre-scans [path] *without* extracting anything and returns its total page
+/// count plus its snag-photo count (every image block on every page except the
+/// first/cover page). The `images` value matches what [extractPdfWorker] later
+/// reports as `totalImages`, and `pages` matches its `pageCount`, so the queue
+/// preview lines up with what extraction will produce.
+///
+/// Intended to be run off the UI isolate (e.g. via `Isolate.run`).
+({int pages, int images}) scanPdf(String path) {
+  MuPdfRepository? repo;
+  try {
+    repo = MuPdfRepository.openFile(path);
+    final totalPages = repo.pageCount;
+
+    var images = 0;
+    // Start at page index 1 to skip the cover/title page.
+    for (int i = 1; i < totalPages; i++) {
+      final dict = repo.getTextDict(i);
+      images += dict.blocks.where((b) => b.type == 1).length;
+    }
+    return (pages: totalPages, images: images);
   } finally {
     repo?.close();
   }

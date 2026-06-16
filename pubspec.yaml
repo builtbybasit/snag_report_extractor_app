@@ -43,6 +43,7 @@ dependencies:
   alert_info: ^0.0.8
   talker_flutter: ^5.1.16
   rename_app: ^1.6.6
+  google_fonts: ^6.2.1
   # Vendored locally so we can fix/extend it (image filter-chain decode,
   # image bbox, ToUnicode text decoding). Upstream is MIT-licensed.
   dart_mupdf_donut:
