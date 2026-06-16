@@ -106,12 +106,3 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
-
-### MUPDF DLL SUPPORT
-# Copy libmupdf_wrapper.dll into the same folder as the .exe
-set(MUPDF_DLL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../clib/build/mupdf_wrapper.dll")
-if(EXISTS ${MUPDF_DLL_PATH})
-  install(FILES "${MUPDF_DLL_PATH}"
-    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-    COMPONENT Runtime)
-endif()
