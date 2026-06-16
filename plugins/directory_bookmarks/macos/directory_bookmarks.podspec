@@ -13,7 +13,9 @@ A Flutter plugin for handling directory bookmarks and file operations with secur
   s.license          = { :type => 'MIT', :file => 'LICENSE' }
   s.author           = { 'Your Company' => 'email@example.com' }
   s.source           = { :path => '.' }
-  s.source_files     = 'Classes/**/*'
+  # Sources live in the Swift Package Manager layout; the podspec references the
+  # same files so both SPM and CocoaPods builds use one source of truth.
+  s.source_files     = 'directory_bookmarks/Sources/directory_bookmarks/**/*.swift'
   s.dependency 'FlutterMacOS'
 
   s.platform         = :osx, '10.14'
