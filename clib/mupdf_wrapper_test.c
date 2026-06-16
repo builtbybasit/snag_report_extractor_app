@@ -4,25 +4,133 @@
 #include <stdarg.h>
 #include <stdbool.h>
 
+static fz_document *doc = NULL;
+static fz_context *ctx = NULL;
+
 // ----------------------------- Error Handling ---------------------------
 static void my_error(void *user, const char *message)
 {
     fprintf(stderr, "MuPDF error: %s\n", message);
 }
 
+static void extract_page_images(fz_document *doc, int page_number, const char *outdir)
+{
+    fz_page *page = NULL;
+    fz_stext_page *stext = NULL;
+    fz_device *dev = NULL;
+
+    fz_try(ctx)
+    {
+        page = fz_load_page(ctx, doc, page_number - 1);
+        if (!page)
+            fz_throw(ctx, FZ_ERROR_GENERIC, "cannot load page %d", page_number);
+
+        fz_rect mediabox = fz_bound_page(ctx, page);
+        stext = fz_new_stext_page(ctx, mediabox);
+
+        fz_stext_options opts = {0};
+        opts.flags = FZ_STEXT_PRESERVE_IMAGES;
+
+        dev = fz_new_stext_device(ctx, stext, &opts);
+        fz_run_page(ctx, page, dev, fz_identity, NULL);
+        fz_close_device(ctx, dev);
+
+        int img_index = 1;
+        for (fz_stext_block *block = stext->first_block; block; block = block->next)
+        {
+            if (block->type == FZ_STEXT_BLOCK_IMAGE)
+            {
+                fz_image *img = block->u.i.image;
+                fz_pixmap *pix = fz_get_pixmap_from_image(ctx, img, NULL, NULL, 0, 0);
+
+                char namebuf[128];
+                fz_snprintf(namebuf, sizeof(namebuf),
+                            "page-%03d-img-%03d", page_number, img_index++);
+
+                char pathbuf[1024];
+                fz_snprintf(pathbuf, sizeof(pathbuf), "%s/%s.png", outdir, namebuf);
+
+                fz_save_pixmap_as_png(ctx, pix, pathbuf);
+                fz_drop_pixmap(ctx, pix);
+            }
+        }
+    }
+    fz_always(ctx)
+    {
+        if (dev) fz_drop_device(ctx, dev);
+        if (stext) fz_drop_stext_page(ctx, stext);
+        if (page) fz_drop_page(ctx, page);
+    }
+    fz_catch(ctx)
+    {
+        fz_warn(ctx, "failed to extract images from page %d", page_number);
+    }
+}
+
+
+static void extract_range(fz_document *doc, const char *range, const char *outdir)
+{
+    int spage, epage, pagecount = fz_count_pages(ctx, doc);
+    int page;
+
+    while ((range = fz_parse_page_range(ctx, range, &spage, &epage, pagecount)))
+    {
+        if (spage <= epage)
+        {
+            for (page = spage; page <= epage; page++)
+                extract_page_images(doc, page, outdir);
+        }
+        else
+        {
+            for (page = spage; page >= epage; page--)
+                extract_page_images(doc, page, outdir);
+        }
+    }
+
+}
+static int usage(void)
+{
+    fprintf(stderr, "usage: mutool image [options] file.pdf [pages]\n");
+    fprintf(stderr, "\t-p <password>\n");
+    fprintf(stderr, "\t-o <dir> output directory (default .)\n");
+    fprintf(stderr, "\tpages\tcomma separated list of page numbers and ranges\n");
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <pdf-file>\n", argv[0]);
+    char *filename;
+    char *password = "";
+    char *outdir = ".";
+    int c;
+
+    ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
+    if (!ctx) {
+        fprintf(stderr, "cannot initialise context\n");
         return EXIT_FAILURE;
     }
 
-    const char *filename = argv[1];
-    fz_context *ctx = NULL;
-    fz_document *doc = NULL;
-    char *result = NULL;
+    while ((c = fz_getopt(argc, argv, "p:o:")) != -1)
+    {
+        switch (c)
+        {
+        case 'p': password = fz_optarg; break;
+        case 'o': outdir = fz_optarg; break;
+        default: return usage();
+        }
+    }
 
-    float scale = 1.0f;
+    if (fz_optind == argc)
+        return usage();
+
+    filename = argv[fz_optind++];
+
+    fz_try(ctx) {
+        fz_mkdir(outdir);
+    }
+    fz_catch(ctx) {
+        fz_warn(ctx, "Failed to create output dir: %s", outdir);
+    }
 
     ctx = fz_new_context(NULL, NULL, FZ_STORE_UNLIMITED);
     if (!ctx) {
@@ -36,168 +144,15 @@ int main(int argc, char **argv)
     fz_try(ctx)
     {
         doc = fz_open_document(ctx, filename);
-        int page_count = fz_count_pages(ctx, doc);
-        bool include_image_data = 1;
-        printf("Page count: %d\n", page_count);
+        if (fz_needs_password(ctx, doc))
+            if (!fz_authenticate_password(ctx, doc, password))
+                fz_throw(ctx, FZ_ERROR_GENERIC, "cannot authenticate password");
 
-        for (int i = 0; i < page_count; i++) {
-            fz_page *page = NULL;
-            fz_stext_page *stext = NULL;
-            fz_device *dev = NULL;
+        if (fz_optind == argc || !fz_is_page_range(ctx, argv[fz_optind]))
+            extract_range(doc, "1-N", outdir);
+        if (fz_optind < argc && fz_is_page_range(ctx, argv[fz_optind]))
+            extract_range(doc, argv[fz_optind++], outdir);
 
-            fz_try(ctx)
-            {
-                page = fz_load_page(ctx, doc, i);
-
-                fz_rect mediabox = fz_bound_page(ctx, page);
-                stext = fz_new_stext_page(ctx, mediabox);
-
-                fz_stext_options opts = {0};
-                opts.flags = FZ_STEXT_PRESERVE_IMAGES;
-                opts.scale = scale;
-
-                dev = fz_new_stext_device(ctx, stext, &opts);
-                fz_run_page(ctx, page, dev, fz_identity, NULL);
-                fz_close_device(ctx, dev);
-
-                // Capture JSON into buffer
-                fz_buffer *buf = fz_new_buffer(ctx, 1024);
-
-                fz_output *out = fz_new_output_with_buffer(ctx, buf);
-
-                int block_comma = 0;
-                for (fz_stext_block *block = stext->first_block; block; block = block->next)
-                {
-                    if (block_comma) fz_write_string(ctx, out, ",");
-                    block_comma = 1;
-
-                    if (block->type == FZ_STEXT_BLOCK_TEXT) {
-                        /* ---- TEXT BLOCK ---- */
-                        fz_write_string(ctx, out, "{");
-                        fz_write_printf(ctx, out, "%q:%q,", "type", "text");
-                        fz_write_printf(ctx, out, "%q:[%d,%d,%d,%d],", "bbox",
-                            (int)(block->bbox.x0 * scale),
-                            (int)(block->bbox.y0 * scale),
-                            (int)(block->bbox.x1 * scale),
-                            (int)(block->bbox.y1 * scale)
-                        );
-                        fz_write_string(ctx, out, "\"lines\":[");
-
-                        int line_comma = 0;
-                        for (fz_stext_line *line = block->u.t.first_line; line; line=line->next) {
-                            if (line_comma) fz_write_string(ctx, out, ",");
-                            line_comma = 1;
-
-                            fz_write_string(ctx, out, "{");
-
-
-                            fz_write_printf(ctx, out, "\"bbox\":[%g,%g,%g,%g],",
-                                    line->bbox.x0, line->bbox.y0,
-                                    line->bbox.x1, line->bbox.y1);
-
-                            // Font info
-                            if (line->first_char) {
-                                fz_font *font = line->first_char->font;
-                                const char *family = "sans-serif";
-                                const char *weight = "normal";
-                                const char *style  = "normal";
-                                if (fz_font_is_monospaced(ctx, font)) family = "monospace";
-                                else if (fz_font_is_serif(ctx, font)) family = "serif";
-                                if (fz_font_is_bold(ctx, font)) weight = "bold";
-                                if (fz_font_is_italic(ctx, font)) style = "italic";
-
-                                fz_write_printf(ctx, out, "%q:{", "font");
-                                fz_write_printf(ctx, out, "%q:%q,", "name", fz_font_name(ctx, font));
-                                fz_write_printf(ctx, out, "%q:%q,", "family", family);
-                                fz_write_printf(ctx, out, "%q:%q,", "weight", weight);
-                                fz_write_printf(ctx, out, "%q:%q,", "style", style);
-                                fz_write_printf(ctx, out, "%q:%d},", "size", (int)(line->first_char->size));
-                                fz_write_printf(ctx, out, "%q:%d,", "x", (int)(line->first_char->origin.x));
-                                fz_write_printf(ctx, out, "%q:%d,", "y", (int)(line->first_char->origin.y));
-                            }
-
-                            // Extract text
-
-                            fz_write_printf(ctx, out, "%q:\"", "text");
-                            for (fz_stext_char* ch = line->first_char; ch; ch = ch->next)
-                            {
-                                if (ch->c == '"' || ch->c == '\\')
-                                    fz_write_printf(ctx, out, "\\%c", ch->c);
-                                else if (ch->c < 32)
-                                    fz_write_printf(ctx, out, "\\u%04x", ch->c);
-                                else
-                                    fz_write_printf(ctx, out, "%C", ch->c);
-                            }
-                            fz_write_printf(ctx, out, "\"}");
-                        }
-                        fz_write_string(ctx, out, "]}");
-                    }
-                    else if (block->type == FZ_STEXT_BLOCK_IMAGE) {
-                        /* ---- IMAGE BLOCK ---- */
-                        // fz_image *img = NULL;
-                        // fz_buffer *png_buf = NULL;
-
-                        fz_write_string(ctx, out, "{");
-                        fz_write_printf(ctx, out, "%q:%q,", "type", "image");
-                        fz_write_printf(ctx, out, "%q:[%d,%d,%d,%d]", "bbox",
-                            (int)(block->bbox.x0 * scale),
-                            (int)(block->bbox.y0 * scale),
-                            (int)(block->bbox.x1 * scale),
-                            (int)(block->bbox.y1 * scale)
-                        );
-
-                        if (include_image_data) {
-                            fz_try(ctx) {
-                                // img = block->u.i.image;
-                                // int w = block->bbox.x1 - block->bbox.x0;
-                                // int h = block->bbox.y1 - block->bbox.y0;
-                                // if (w * h > 16777216) { // 4K * 4K pixels max
-                                //     fz_write_string(ctx, out, ",\"data\":null,\"error\":\"Image too large\"");
-                                // } else {
-                                    // png_buf = fz_new_buffer_from_image_as_png(ctx, img, fz_default_color_params);
-
-                                    // fz_write_string(ctx, out, ",\"data\":\"");
-
-                                    // fz_write_base64_buffer(ctx, out, png_buf, 0);
-
-                                    // fz_write_string(ctx, out, "\"");
-
-                                // }
-                            }
-                            fz_always(ctx) {
-                                // fz_drop_buffer(ctx, png_buf);
-                            }
-                            fz_catch(ctx) {
-                                fz_write_string(ctx, out, ",\"data\":null");
-                            }
-                        }
-                        fz_write_string(ctx, out, "}");
-                    }
-                    else {
-                        fz_write_string(ctx, out, "{\"type\":\"other\"}");
-                    }
-                }
-
-                fz_write_printf(ctx, out, "]}");
-                fz_close_output(ctx, out);
-
-                // Extract JSON string from buffer
-                unsigned char *data = NULL;
-                size_t size = fz_buffer_storage(ctx, buf, &data);
-                printf("Page %d JSON:\n%.*s\n", i + 1, (int)size, data);
-
-            }
-            fz_always(ctx)
-            {
-                fz_drop_device(ctx, dev);
-                fz_drop_stext_page(ctx, stext);
-                fz_drop_page(ctx, page);
-            }
-            fz_catch(ctx)
-            {
-                fprintf(stderr, "Failed to process page %d\n", i + 1);
-            }
-        }
     }
     fz_always(ctx)
     {
@@ -205,8 +160,7 @@ int main(int argc, char **argv)
     }
     fz_catch(ctx)
     {
-        fprintf(stderr, "Failed to process file: %s\n", filename);
-        fz_drop_context(ctx);
+        fz_report_error(ctx);
         return EXIT_FAILURE;
     }
 
