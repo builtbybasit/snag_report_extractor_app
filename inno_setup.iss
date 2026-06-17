@@ -1,20 +1,43 @@
+; Inno Setup script for Snag Report Extractor
+; Build the app first:  flutter build windows --release
+; Then compile this script with the Inno Setup Compiler (ISCC.exe) or the IDE.
+; All paths are relative to this .iss file, so it works on any machine / CI runner.
+
+#define MyAppName "Snag Report Extractor"
+#define MyAppExeName "snag_report_extractor_app.exe"
+#define MyAppVersion "1.0.0"
+#define MyAppPublisher "Desality Snagging"
+
+; Flutter release output, relative to this script. {#SourcePath} already ends with a backslash.
+#define BuildDir "build\windows\x64\runner\Release"
+
 [Setup]
-AppName="Snag Report Extractor"
-AppVersion=1.0
-DefaultDirName="{pf}\Snag Report Extractor"
-DefaultGroupName=Snag Report Extractor
-OutputDir=D:\Projects\snag_report_extractor_app\build\windows\x64\runner\Release\installer
-OutputBaseFilename="Snag Report Extractor"
+; AppId uniquely identifies this app so upgrades replace the previous version.
+; Keep this GUID stable across releases.
+AppId={{8F3A6E1C-2D4B-4F9A-B7C3-9E5D1A0F62B4}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+DefaultDirName={autopf}\{#MyAppName}
+DefaultGroupName={#MyAppName}
+OutputDir={#SourcePath}{#BuildDir}\installer
+OutputBaseFilename=SnagReportExtractor-Setup-{#MyAppVersion}
 Compression=lzma
 SolidCompression=yes
+; This is a 64-bit application.
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+WizardStyle=modern
 
 [Tasks]
-Name: "desktopicon"; Description: "Create Desktop shortcut";
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-Source: "D:\Projects\snag_report_extractor_app\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourcePath}{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Snag Report Extractor"; Filename: "{app}\snag_report_extractor_app.exe"
-Name: "{userdesktop}\Snag Report Extractor"; Filename: "{app}\snag_report_extractor_app.exe"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
