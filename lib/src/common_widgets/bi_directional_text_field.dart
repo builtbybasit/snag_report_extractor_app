@@ -19,9 +19,9 @@ class TextDirectionNotifier extends Notifier<TextDirection> {
 }
 
 class SpecialTextField extends ConsumerWidget {
-  const SpecialTextField({super.key, final labelText});
+  const SpecialTextField({super.key, this.labelText});
 
-  final String? labelText = null;
+  final String? labelText;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

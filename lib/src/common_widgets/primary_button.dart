@@ -10,19 +10,27 @@ class PrimaryButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final foregroundColor = Theme.of(context).colorScheme.onPrimary;
     return SizedBox(
       height: Sizes.p48,
       child: ElevatedButton(
-        onPressed: onPressed,
+        onPressed: isLoading ? null : onPressed,
         child: isLoading
-            ? const CircularProgressIndicator()
+            ? SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(foregroundColor),
+                ),
+              )
             : Text(
                 text,
                 textAlign: TextAlign.center,
                 style: Theme.of(context)
                     .textTheme
                     .titleLarge!
-                    .copyWith(color: Colors.white),
+                    .copyWith(color: foregroundColor),
               ),
       ),
     );

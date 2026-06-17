@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -7,10 +8,11 @@ import 'package:saf_util/saf_util.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter/services.dart';
 import 'package:directory_bookmarks/directory_bookmarks.dart';
 import 'package:snag_report_extractor_app/src/logging/talker.dart';
 
+/// Thrown when a [DirectoryManager] operation fails. Carries an optional
+/// [originalError] so the underlying cause is preserved when surfaced.
 class DirectoryManagerException implements Exception {
   final String message;
   final dynamic originalError;
@@ -22,6 +24,8 @@ class DirectoryManagerException implements Exception {
       'DirectoryManagerException: $message${originalError != null ? '\nOriginal error: $originalError' : ''}';
 }
 
+/// A platform-agnostic file/directory entry. On Android [uri] is a SAF
+/// content URI; elsewhere it is a filesystem path.
 class DocumentFile {
   final String uri;
   final String name;
@@ -88,9 +92,269 @@ class DocumentFile {
       lastModified.hashCode;
 }
 
+/// The key under which the selected directory path/URI is persisted in
+/// [SharedPreferences].
+const _kSelectedDirectoryKey = "selected_directory";
+
+/// Encapsulates every platform-specific way of working with the output
+/// directory: picking it, persisting/restoring it, existence checks, and
+/// listing/reading/writing files.
+///
+/// Two implementations exist — [AndroidSafStrategy] (Android Storage Access
+/// Framework) and [NativeDirectoryStrategy] (`dart:io`, plus macOS
+/// security-scoped bookmarks). [DirectoryManager] picks one once and delegates
+/// to it, so no method has to branch on [Platform] itself.
+abstract class DirectoryStrategy {
+  /// Selects the appropriate strategy for the current platform.
+  factory DirectoryStrategy.forPlatform() {
+    if (Platform.isAndroid) return AndroidSafStrategy();
+    return NativeDirectoryStrategy();
+  }
+
+  /// Persists [path] so it can be restored on the next launch. Implementations
+  /// must store enough to survive a relaunch (e.g. a macOS bookmark).
+  Future<void> persist(String path);
+
+  /// Restores the previously persisted directory, or `null` if there is none
+  /// (or it no longer exists). Implementations are responsible for their own
+  /// existence verification.
+  Future<String?> restore();
+
+  /// Clears any persisted directory selection.
+  Future<void> clearPersisted();
+
+  /// Opens the platform directory picker. Returns the chosen path/URI, or
+  /// `null` if the user cancelled.
+  Future<String?> pickDirectory();
+
+  /// Normalizes a directory path/URI for comparison and lookup.
+  String normalizeUri(String uri);
+
+  /// Whether the directory at [dirUri] exists.
+  Future<bool> directoryExists(String dirUri);
+
+  /// Whether the file at [path] exists.
+  Future<bool> fileExists(String path);
+
+  /// Resolves the URI/path of [directory] relative to [root].
+  Future<String> resolveChildDirectory(String root, String directory);
+
+  /// Lists the entries directly under [dirUri].
+  Future<List<DocumentFile>> listDocuments(String dirUri);
+
+  /// Reads the raw bytes of the file at [path].
+  Future<Uint8List> readBytes(String path);
+
+  /// Reads the file at [path] decoded as UTF-8.
+  Future<String> readString(String path);
+
+  /// Writes [data] as a file named [fileName] (with [mime]) at [path].
+  Future<void> writeFile(
+      String path, String fileName, String mime, Uint8List data);
+}
+
+/// Android implementation backed by the Storage Access Framework via
+/// `saf_util` / `saf_stream`. Paths are content URIs and persistence relies on
+/// SAF's persistable permissions plus a [SharedPreferences] record of the URI.
+class AndroidSafStrategy implements DirectoryStrategy {
+  final _safUtil = SafUtil();
+  final _safStream = SafStream();
+
+  @override
+  Future<void> persist(String path) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kSelectedDirectoryKey, path);
+  }
+
+  @override
+  Future<String?> restore() async {
+    final prefs = await SharedPreferences.getInstance();
+    final uri = prefs.getString(_kSelectedDirectoryKey);
+    if (uri == null) return null;
+    return await directoryExists(uri) ? uri : null;
+  }
+
+  @override
+  Future<void> clearPersisted() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kSelectedDirectoryKey);
+  }
+
+  @override
+  Future<String?> pickDirectory() async {
+    final dir = await _safUtil.pickDirectory(
+      initialUri: '',
+      persistablePermission: true,
+    );
+    return dir?.uri;
+  }
+
+  @override
+  String normalizeUri(String uri) {
+    if (uri == '/') return uri;
+    final uriParts = uri.split('://');
+    if (uriParts.length == 2) {
+      final path = p.normalize(uriParts[1]);
+      return '${uriParts[0]}://$path';
+    }
+    throw ArgumentError("Invalid URI: $uri");
+  }
+
+  @override
+  Future<bool> directoryExists(String dirUri) =>
+      _safUtil.exists(normalizeUri(dirUri), true);
+
+  @override
+  Future<bool> fileExists(String path) => _safUtil.exists(path, false);
+
+  @override
+  Future<String> resolveChildDirectory(String root, String directory) async {
+    if (directory == '/' || directory == '') return root;
+    final dir = await _safUtil.child(root, [...directory.split('/')]);
+    if (dir == null) {
+      throw DirectoryManagerException("Directory not found: $directory");
+    }
+    if (!dir.isDir) {
+      throw DirectoryManagerException("Not a directory: $directory");
+    }
+    return dir.uri;
+  }
+
+  @override
+  Future<List<DocumentFile>> listDocuments(String dirUri) async {
+    final files = await _safUtil.list(dirUri);
+    return files
+        .map((file) => DocumentFile(
+              uri: file.uri,
+              name: file.name,
+              isDir: file.isDir,
+              length: file.length,
+              lastModified: file.lastModified,
+            ))
+        .toList();
+  }
+
+  @override
+  Future<Uint8List> readBytes(String path) => _safStream.readFileBytes(path);
+
+  @override
+  Future<String> readString(String path) async {
+    final bytes = await _safStream.readFileBytes(path);
+    // Decode as UTF-8 (not Latin-1) so multi-byte characters survive; tolerate
+    // malformed sequences rather than throwing.
+    return utf8.decode(bytes, allowMalformed: true);
+  }
+
+  @override
+  Future<void> writeFile(
+          String path, String fileName, String mime, Uint8List data) =>
+      _safStream.writeFileBytes(path, fileName, mime, data);
+}
+
+/// Native implementation backed by `dart:io`. On macOS it additionally manages
+/// a security-scoped bookmark (via `directory_bookmarks`) so the selected
+/// folder stays accessible across launches inside the sandbox.
+class NativeDirectoryStrategy implements DirectoryStrategy {
+  @override
+  Future<void> persist(String path) async {
+    if (Platform.isMacOS) {
+      await DirectoryBookmarkHandler.saveBookmark(
+        path,
+        metadata: {'lastAccessed': DateTime.now().toIso8601String()},
+      );
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kSelectedDirectoryKey, path);
+  }
+
+  @override
+  Future<String?> restore() async {
+    // On macOS the security-scoped bookmark is the source of truth: resolving
+    // it re-establishes sandbox access. Restore from it ONLY and never fall
+    // through to the prefs path, which could carry a stale value.
+    if (Platform.isMacOS) {
+      final bookmark = await DirectoryBookmarkHandler.resolveBookmark();
+      final path = bookmark?.path;
+      if (path == null) return null;
+      return await directoryExists(path) ? path : null;
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    final dir = prefs.getString(_kSelectedDirectoryKey);
+    if (dir == null) return null;
+    return await directoryExists(dir) ? dir : null;
+  }
+
+  @override
+  Future<void> clearPersisted() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kSelectedDirectoryKey);
+  }
+
+  @override
+  Future<String?> pickDirectory() => FilePicker.getDirectoryPath();
+
+  @override
+  String normalizeUri(String uri) {
+    if (uri == '/') return uri;
+    return p.normalize(uri);
+  }
+
+  @override
+  Future<bool> directoryExists(String dirUri) =>
+      Directory(normalizeUri(dirUri)).exists();
+
+  @override
+  Future<bool> fileExists(String path) => File(path).exists();
+
+  @override
+  Future<String> resolveChildDirectory(String root, String directory) async =>
+      p.join(root, directory);
+
+  @override
+  Future<List<DocumentFile>> listDocuments(String dirUri) async {
+    final entries = await Directory(dirUri).list().toList();
+    final docs = <DocumentFile>[];
+    for (final entry in entries) {
+      try {
+        // Stat once and reuse it for type/size/modified. statSync() throws on a
+        // broken symlink, so skip the bad entry instead of aborting the whole
+        // listing.
+        final stat = entry.statSync();
+        final isDir = stat.type == FileSystemEntityType.directory;
+        docs.add(DocumentFile(
+          uri: entry.path,
+          name: p.basename(entry.path),
+          isDir: isDir,
+          length: isDir ? 0 : stat.size,
+          lastModified: stat.modified.millisecondsSinceEpoch,
+        ));
+      } catch (e, st) {
+        talker.error("Skipping unreadable entry: ${entry.path}", e, st);
+      }
+    }
+    return docs;
+  }
+
+  @override
+  Future<Uint8List> readBytes(String path) => File(path).readAsBytes();
+
+  @override
+  Future<String> readString(String path) => File(path).readAsString();
+
+  @override
+  Future<void> writeFile(
+          String path, String fileName, String mime, Uint8List data) =>
+      File(path).writeAsBytes(data);
+}
+
+/// A Riverpod notifier holding the currently selected output directory
+/// (`null` = none selected) and exposing cross-platform file operations.
+///
+/// All platform branching lives in a [DirectoryStrategy] chosen once for the
+/// running platform; this notifier simply delegates to it.
 class DirectoryManager extends Notifier<String?> {
-  final _safUtilPlugin = SafUtil();
-  final _safStreamPlugin = SafStream();
+  final DirectoryStrategy _strategy = DirectoryStrategy.forPlatform();
 
   @override
   String? build() {
@@ -105,53 +369,20 @@ class DirectoryManager extends Notifier<String?> {
 
   /// Loads the persisted directory and updates [state] when it resolves.
   ///
-  /// Safe to await (deterministic) and safe to fire-and-forget: every state
+  /// Safe to await (deterministic) and safe to fire-and-forget: the state
   /// write is guarded by [Ref.mounted], so a disposal mid-load cannot mutate a
   /// stale notifier.
   Future<void> init() => _loadSavedDirectory();
 
-  String _normalizePath(String path) {
-    return p.normalize(path);
-  }
-
-  // Normalize the path/URI handling
-  String _normalizeUri(String uri) {
-    if (uri == '/') return uri;
-    if (Platform.isAndroid) {
-      final uriParts = uri.split('://');
-      if (uriParts.length == 2) {
-        final path = p.normalize(uriParts[1]);
-        return '${uriParts[0]}://$path';
-      }
-      throw ArgumentError("Invalid URI: $uri");
-    }
-
-    return p.normalize(uri);
-  }
-
   Future<void> _loadSavedDirectory() async {
-    if (Platform.isMacOS) {
-      final bookmark = await DirectoryBookmarkHandler.resolveBookmark();
-      if (bookmark == null) {
-        return;
-      }
-      final path = bookmark.path;
-      if (await checkDirectoryExists(path)) {
-        if (!ref.mounted) return;
-        state = path;
-      }
-    }
-    final prefs = await SharedPreferences.getInstance();
-    final dir = prefs.getString("selected_directory");
-    if (dir == null) {
-      return;
-    }
-    if (await checkDirectoryExists(dir)) {
-      if (!ref.mounted) return;
-      state = dir;
-    }
+    final saved = await _strategy.restore();
+    if (saved == null) return;
+    if (!ref.mounted) return;
+    state = saved;
   }
 
+  /// Returns the selected directory, throwing [DirectoryManagerException] if
+  /// none has been selected.
   String getDirectory() {
     if (state == null) {
       throw DirectoryManagerException("Directory not selected");
@@ -159,149 +390,72 @@ class DirectoryManager extends Notifier<String?> {
     return state!;
   }
 
-  Future<void> _saveDirectory(String path) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString("selected_directory", path);
-  }
-
-  Future<void> _saveBookmark(String path) async {
-    if (Platform.isMacOS) {
-      await DirectoryBookmarkHandler.saveBookmark(
-        path,
-        metadata: {'lastAccessed': DateTime.now().toIso8601String()},
-      );
-    }
-  }
-
+  /// Opens the platform directory picker, persists the choice, and updates
+  /// [state]. A user cancellation is silent; any genuine failure is logged and
+  /// rethrown as a [DirectoryManagerException] so it surfaces.
   Future<void> selectDirectory() async {
+    String? directory;
     try {
-      String? directory;
-      if (Platform.isAndroid) {
-        // Android: Use SAF to select and persist directory
-        final dir = await _safUtilPlugin.pickDirectory(
-          initialUri: '',
-          persistablePermission: true,
-        );
-        if (dir != null) {
-          directory = dir.uri;
-        }
-      } else {
-        directory = await FilePicker.getDirectoryPath();
-      }
-      if (directory != null) {
-        await _saveBookmark(directory);
-        await _saveDirectory(directory);
-        state = directory;
-      }
+      directory = await _strategy.pickDirectory();
+      // User cancelled the picker — not an error, stay silent.
+      if (directory == null) return;
+      await _strategy.persist(directory);
     } catch (e, st) {
       talker.error("Error selecting directory", e, st);
+      throw DirectoryManagerException("Failed to select directory", e);
     }
+    state = directory;
   }
 
+  /// Whether the directory at [dirUri] exists.
   Future<bool> checkDirectoryExists(String dirUri) async {
     try {
-      final normalizedDir = _normalizeUri(dirUri);
-      if (Platform.isAndroid) {
-        return await _safUtilPlugin.exists(normalizedDir, true);
-      }
-      final dir = Directory(normalizedDir);
-      return await dir.exists();
+      return await _strategy.directoryExists(dirUri);
     } catch (e) {
       throw DirectoryManagerException("Failed to check directory exists,\n$e");
     }
   }
 
-  Future<bool> checkFileExists(String dirUri) async {
-    if (Platform.isAndroid) {
-      // Android: Use SAF to check if the file exists
-      return await _safUtilPlugin.exists(dirUri, false);
-    }
-    // print("Checking file existence: $dirUri");
-    final file = File(dirUri);
-    return await file.exists();
-  }
+  /// Whether the file at [path] exists.
+  Future<bool> checkFileExists(String path) => _strategy.fileExists(path);
 
+  /// Lists every entry (files and sub-directories) under [directory], resolved
+  /// relative to the selected directory.
   Future<List<DocumentFile>> listDocs(String directory) async {
-    final normalizedDir = _normalizePath(directory);
+    final normalizedDir = p.normalize(directory);
     talker.debug("Listing files in directory: $normalizedDir");
-    final currentDirectory = getDirectory();
-    final dirUri = await _getDirectoryUri(currentDirectory, normalizedDir);
+    final dirUri =
+        await _strategy.resolveChildDirectory(getDirectory(), normalizedDir);
     talker.debug("Directory URI: $dirUri");
     if (!await checkDirectoryExists(dirUri)) {
       throw Exception("Directory not found: $normalizedDir");
     }
-    if (Platform.isAndroid) {
-      // Android: Use SAF to list files in the selected directory
-      return await _listAndroidDocuments(dirUri);
-    }
-    return await _listNativeDocuments(dirUri);
+    return _strategy.listDocuments(dirUri);
   }
 
-  Future<List<DocumentFile>> _listAndroidDocuments(String dirUri) async {
-    final files = await _safUtilPlugin.list(dirUri);
-    return files.map((file) {
-      return DocumentFile(
-        uri: file.uri,
-        name: file.name,
-        isDir: file.isDir,
-        length: file.length,
-        lastModified: file.lastModified,
-      );
-    }).toList();
-  }
-
-  Future<List<DocumentFile>> _listNativeDocuments(String dirUri) async {
-    final dir = Directory(dirUri);
-    final files = await dir.list().toList();
-    return files.map((file) {
-      final name = p.basename(file.path);
-      final isDir = file.statSync().type == FileSystemEntityType.directory;
-      final length = isDir ? 0 : file.statSync().size;
-      final lastModified = file.statSync().modified.millisecondsSinceEpoch;
-      return DocumentFile(
-        uri: file.path,
-        name: name,
-        isDir: isDir,
-        length: length,
-        lastModified: lastModified,
-      );
-    }).toList();
-  }
-
-  // List files in the selected directory
+  /// Like [listDocs] but excludes sub-directories.
   Future<List<DocumentFile>> listFiles(String dir) async {
     final files = await listDocs(dir);
     return files.where((file) => !file.isDir).toList();
   }
 
+  /// Reads the raw bytes of the file at [path].
   Future<Uint8List> readFileBytes(String path) async {
     if (!await checkFileExists(path)) {
       throw Exception("File not found: $path");
     }
-    if (Platform.isAndroid) {
-      return await _safStreamPlugin.readFileBytes(path);
-    }
-
-    final file = File(path);
-    return await file.readAsBytes();
+    return _strategy.readBytes(path);
   }
 
-  // Read file from the selected directory
+  /// Reads the file at [path] as a UTF-8 string.
   Future<String?> readFileString(String path) async {
     if (!await checkFileExists(path)) {
       throw Exception("File not found: $path");
     }
-
-    if (Platform.isAndroid) {
-      final fileBytes = await _safStreamPlugin.readFileBytes(path);
-      return String.fromCharCodes(fileBytes);
-    }
-
-    final file = File(path);
-    final fileContent = await file.readAsString();
-    return fileContent;
+    return _strategy.readString(path);
   }
 
+  /// Returns the first file named [fileName] within [directory].
   Future<DocumentFile> getFileByName(String directory, String fileName) async {
     final files = await listFiles(directory);
     final file = files.firstWhere((file) => file.name == fileName);
@@ -309,39 +463,15 @@ class DirectoryManager extends Notifier<String?> {
     return file;
   }
 
-  Future<String> _getDirectoryUri(
-      String currentDirectory, String directory) async {
-    if (Platform.isAndroid) {
-      if (directory == '/' || directory == '') {
-        return currentDirectory;
-      }
-      final dir = await _safUtilPlugin
-          .child(currentDirectory, [...directory.split('/')]);
-      if (dir == null) {
-        throw DirectoryManagerException("Directory not found: $directory");
-      }
-      if (dir.isDir == false) {
-        throw DirectoryManagerException("Not a directory: $directory");
-      }
-      return dir.uri;
-    }
-    return p.join(currentDirectory, directory);
-  }
-
+  /// Writes [data] as a file named [fileName] (with [mime]) at [path].
   Future<void> writeFile(
-      String path, String fileName, String mime, Uint8List data) async {
-    if (Platform.isAndroid) {
-      await _safStreamPlugin.writeFileBytes(path, fileName, mime, data);
-    } else {
-      final file = File(path);
-      await file.writeAsBytes(data);
-    }
-  }
+          String path, String fileName, String mime, Uint8List data) =>
+      _strategy.writeFile(path, fileName, mime, data);
 
+  /// Clears the selection and removes any persisted directory.
   Future<void> clearDirectory() async {
     state = null;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove("selected_directory");
+    await _strategy.clearPersisted();
   }
 }
 

@@ -34,13 +34,35 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
   // to keep the counter aligned but skip re-sending them. 0 means a fresh run.
   final int resumeFromImage = (data["resumeFromImage"] as int?) ?? 0;
 
-  // Back-channel for image backpressure: the main isolate sends one ack per
-  // consumed image; the worker blocks once [_imageAckWindow] images are
+  // Back-channel for image backpressure AND graceful cancellation: the main
+  // isolate sends one `null` ack per consumed image, and a [WorkerCancel] to
+  // request a clean stop. The worker blocks once [_imageAckWindow] images are
   // outstanding so it can't flood the receive port with multi-MB byte arrays.
   final ackPort = ReceivePort();
-  final acks = StreamIterator<dynamic>(ackPort);
-  sendPort.send(WorkerReady(ackPort.sendPort));
+
+  // Live credit count. Every ack received increments it (even while we're not
+  // blocked), so when we *do* stall we already have all outstanding acks
+  // counted and the in-flight window stays near [_imageAckWindow] instead of
+  // collapsing to 1.
   int credits = _imageAckWindow;
+  var cancelled = false;
+  // Completer signalled whenever a credit becomes available or cancellation is
+  // requested, so a blocked worker wakes immediately.
+  Completer<void>? waiter;
+
+  final ackSub = ackPort.listen((dynamic message) {
+    if (message is WorkerCancel) {
+      cancelled = true;
+    } else {
+      // Any other message (`null`) is an image-credit ack.
+      credits++;
+    }
+    // Wake a blocked worker, if any.
+    final w = waiter;
+    if (w != null && !w.isCompleted) w.complete();
+  });
+
+  sendPort.send(WorkerReady(ackPort.sendPort));
 
   MuPdfRepository? repo;
   try {
@@ -66,6 +88,10 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
     // Second pass: per page, emit progress then each captioned image.
     int imageCounter = 1;
     for (int pageNo = 1; pageNo <= totalPages; pageNo++) {
+      // Graceful cancel: break out so the `finally` below closes the native
+      // document + file handle instead of leaking them on an Isolate.kill.
+      if (cancelled) break;
+
       final dict = dicts[pageNo - 1];
       sendPort.send(PageProgress(pageNo, totalPages));
 
@@ -76,6 +102,7 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
       final textBlocks = dict.blocks.where((b) => b.type == 0).toList();
 
       for (final imgBlock in imageBlocks) {
+        if (cancelled) break;
         final caption = _captionFor(imgBlock.bbox, textBlocks);
 
         final xref = imgBlock.imageXref;
@@ -92,12 +119,18 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
         final n = imageCounter++;
         if (n <= resumeFromImage) continue;
 
-        // Backpressure: once the window is exhausted, wait for the main isolate
-        // to ack a previously sent image before putting another on the wire.
-        if (credits == 0) {
-          await acks.moveNext();
-          credits++;
+        // Backpressure: once the window is exhausted, wait until an ack (or a
+        // cancel) arrives. The listener increments `credits` for every ack it
+        // sees — including any that arrived while we weren't blocked — so the
+        // in-flight window stays near [_imageAckWindow] rather than collapsing
+        // to 1 after the first stall.
+        while (credits == 0 && !cancelled) {
+          final w = waiter = Completer<void>();
+          await w.future;
+          waiter = null;
         }
+        if (cancelled) break;
+
         sendPort.send(
           ImageExtracted(bytes, caption, n, totalImages),
         );
@@ -105,11 +138,14 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
       }
     }
 
-    sendPort.send(ExtractionDone(outputDir));
-  } catch (e) {
-    sendPort.send(ExtractionFailed(e.toString()));
+    if (!cancelled) sendPort.send(ExtractionDone(outputDir));
+  } catch (e, st) {
+    // Include the stack trace: it's otherwise dropped across the isolate
+    // boundary, which makes FFI/engine failures hard to diagnose. ExtractionFailed
+    // only carries a String, so fold the trace into it.
+    sendPort.send(ExtractionFailed('$e\n$st'));
   } finally {
-    await acks.cancel();
+    await ackSub.cancel();
     ackPort.close();
     repo?.close();
   }
@@ -221,10 +257,15 @@ Uint8List? _rawSamplesToPng(ExtractedImage ex) {
   if (channels != 1 && channels != 3) return null; // CMYK unsupported
   if (ex.image.length < ex.width * ex.height * channels) return null;
 
+  // MuPDF can hand back a *view* into a larger backing buffer (non-zero
+  // offsetInBytes). `Image.fromBytes` reads from the START of the passed
+  // ByteBuffer (offset 0), so passing `ex.image.buffer` directly would read
+  // the wrong bytes / overrun. Copy into a fresh, exactly-sized contiguous
+  // buffer whose offset is guaranteed to be 0.
   final image = img.Image.fromBytes(
     width: ex.width,
     height: ex.height,
-    bytes: ex.image.buffer,
+    bytes: Uint8List.fromList(ex.image).buffer,
     numChannels: channels,
   );
   return img.encodePng(image);

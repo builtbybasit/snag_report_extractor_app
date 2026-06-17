@@ -24,6 +24,21 @@ class WorkerReady extends PdfWorkerMessage {
   const WorkerReady(this.ackPort);
 }
 
+/// Control signals the main isolate sends back to the worker over the ack
+/// port (the same [SendPort] handed out by [WorkerReady]).
+///
+/// The port carries two kinds of value:
+///   * `null`            — one image-credit ack (see [WorkerReady]).
+///   * [WorkerCancel]    — a graceful cancellation request.
+///
+/// Cancellation flows over this existing channel rather than relying on
+/// `Isolate.kill`, so the worker can break out of its page loop and run its
+/// `finally` block — closing the native MuPDF document + file handle instead
+/// of leaking them on every pause/cancel.
+class WorkerCancel {
+  const WorkerCancel();
+}
+
 /// Progress for a single page: `page` of `pageCount` has been parsed.
 class PageProgress extends PdfWorkerMessage {
   final int page;

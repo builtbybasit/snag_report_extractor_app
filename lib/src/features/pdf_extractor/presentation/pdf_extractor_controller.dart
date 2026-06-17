@@ -31,6 +31,17 @@ class ExtractionTask {
   /// The port the worker streams [PdfWorkerMessage]s back on.
   final ReceivePort receivePort;
 
+  /// The worker's ack/control port, learned from its [WorkerReady] handshake.
+  /// Sending [WorkerCancel] here asks the worker to break its page loop and run
+  /// its `finally` (closing the native MuPDF document + file handle) — a clean
+  /// stop that `Isolate.kill` would skip, leaking native + file handles.
+  SendPort? controlPort;
+
+  /// Completes when the worker isolate's message loop has fully exited (its
+  /// port closed). Lets a pause/cancel wait briefly for the graceful stop
+  /// before falling back to [Isolate.kill].
+  final Completer<void> exited = Completer<void>();
+
   /// Completing this token deterministically unblocks the processing loop for
   /// this file — unlike relying on a killed isolate to close its port, which is
   /// what made cancellation flaky before.
@@ -68,6 +79,26 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
   @override
   PdfExtractorState build() {
     directoryManager = ref.read(directoryManagerProvider.notifier);
+
+    // The notifier owns isolates + ReceivePorts that outlive a single rebuild.
+    // On dispose (provider teardown / hot-reload) tear every in-flight task
+    // down so nothing leaks a native/file handle or fires a callback that
+    // mutates a disposed notifier.
+    ref.onDispose(() {
+      for (final task in _tasks.values) {
+        // Best-effort graceful stop so the worker runs its `finally`...
+        task.controlPort?.send(const WorkerCancel());
+        // ...but on teardown we can't wait, so kill immediately as well.
+        task.isolate?.kill(priority: Isolate.immediate);
+        // Unblock any pending processing-loop wait and mark the task exited so
+        // no completer is left dangling.
+        if (!task.cancelToken.isCompleted) task.cancelToken.complete();
+        if (!task.exited.isCompleted) task.exited.complete();
+        task.receivePort.close();
+      }
+      _tasks.clear();
+    });
+
     return PdfExtractorState();
   }
 
@@ -182,9 +213,42 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
       filePath: item.copyWith(progress: progress.copyWith(paused: true)),
     });
 
-    task?.isolate?.kill(priority: Isolate.immediate);
-    final token = task?.cancelToken;
-    if (token != null && !token.isCompleted) token.complete();
+    // Graceful stop: let the worker close its native document + file handle via
+    // its `finally` instead of leaking them on an immediate kill. This also
+    // completes the cancel token to unblock the processing loop's wait.
+    if (task != null) _requestGracefulCancel(task);
+  }
+
+  /// Asks the worker behind [task] to stop gracefully so it runs its `finally`
+  /// (closing the native MuPDF document + file handle), then waits briefly for
+  /// it to exit, falling back to [Isolate.kill] only if it doesn't.
+  ///
+  /// `Isolate.kill` alone skips the worker's `finally`, leaking a native handle
+  /// and a file handle on every pause/cancel — this is the fix for that.
+  void _requestGracefulCancel(ExtractionTask task) {
+    // 1. Ask the worker to break out of its page loop. If the handshake hasn't
+    //    landed yet (no control port), we fall straight through to the kill.
+    task.controlPort?.send(const WorkerCancel());
+
+    // 2. Unblock the processing loop's wait immediately so it can move on.
+    if (!task.cancelToken.isCompleted) task.cancelToken.complete();
+
+    // 3. Give the worker a short grace period to unwind cleanly, then kill it
+    //    as a last resort if it's still alive.
+    if (task.controlPort == null) {
+      task.isolate?.kill(priority: Isolate.immediate);
+      return;
+    }
+    final isolate = task.isolate;
+    Future.any([
+      task.exited.future,
+      Future<void>.delayed(const Duration(milliseconds: 500)),
+    ]).whenComplete(() {
+      if (!task.exited.isCompleted) {
+        talker.warning("Worker didn't exit gracefully; killing isolate");
+        isolate?.kill(priority: Isolate.immediate);
+      }
+    });
   }
 
   /// File size in bytes via a cheap stat, or `null` if it can't be read.
@@ -245,15 +309,13 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     final task = _tasks[file.path];
     final inFlight = task != null;
     if (inFlight) {
-      talker.warning("Killing isolate for file: ${file.name}");
-      task.isolate?.kill(priority: Isolate.immediate);
+      talker.warning("Cancelling isolate for file: ${file.name}");
+      // Graceful stop so the worker closes its native + file handles via its
+      // `finally`; this also completes the cancel token, which instantly
+      // unblocks the processing loop for this file (it races every wait against
+      // the token), and kills the isolate as a last resort.
+      _requestGracefulCancel(task);
     }
-
-    // Completing the cancel token instantly unblocks the processing loop for
-    // this file (it races every wait against the token). Closing the port is
-    // just belt-and-suspenders cleanup.
-    final token = task?.cancelToken;
-    if (token != null && !token.isCompleted) token.complete();
     task?.receivePort.close();
 
     // Drop the file from state first so the processing loop stops touching it.
@@ -294,8 +356,8 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     talker.info("Clearing queue (${state.items.length} file(s))");
 
     for (final task in _tasks.values) {
-      task.isolate?.kill(priority: Isolate.immediate);
-      if (!task.cancelToken.isCompleted) task.cancelToken.complete();
+      // Graceful stop so each worker closes its native + file handles.
+      _requestGracefulCancel(task);
       task.receivePort.close();
     }
     _tasks.clear();
@@ -455,10 +517,13 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
       filePath,
       (item) {
         final base = item.progress;
-        // Resuming: keep the existing counters and clear the paused flag.
-        // Fresh start: a brand-new progress record.
+        // Resuming: keep the existing counters, clear the paused flag, and
+        // clear any stale error (now possible via the copyWith sentinel) so a
+        // resumed file doesn't carry a previous failure forward.
         if (isResume && base != null) {
-          return item.copyWith(progress: base.copyWith(paused: false));
+          return item.copyWith(
+            progress: base.copyWith(paused: false, error: null),
+          );
         }
         return item.copyWith(
           progress: PdfFileProgress(
@@ -500,16 +565,22 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
         switch (msg) {
           case WorkerReady(ackPort: final port):
             ackPort = port;
+            // Expose the control port on the task so pause/remove/dispose can
+            // ask the worker to stop gracefully (and run its `finally`).
+            task.controlPort = port;
 
           case ExtractionFailed(:final error):
             talker.error("Error processing $fileName", error);
             final item = state.items[filePath];
             if (item != null) {
+              // Re-read the latest progress rather than the pre-await capture so
+              // interleaved counter/ETA updates aren't discarded.
+              final base = item.progress ?? currentProgress;
               state = state.copyWith(
                 items: {
                   ...state.items,
                   filePath: item.copyWith(
-                    progress: currentProgress.copyWith(
+                    progress: base.copyWith(
                       error: error,
                       done: true,
                     ),
@@ -528,11 +599,16 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
             talker.debug("[$fileName] Processed page $page/$pageCount");
             _patchItem(
               filePath,
-              (item) => item.copyWith(
-                progress: currentProgress
-                    .copyWith(currentPage: page, totalPages: pageCount)
-                    .markPageDone(),
-              ),
+              (item) {
+                // Re-read the latest progress inside the closure so interleaved
+                // image/page updates aren't discarded by a stale capture.
+                final base = item.progress ?? currentProgress;
+                return item.copyWith(
+                  progress: base
+                      .copyWith(currentPage: page, totalPages: pageCount)
+                      .markPageDone(),
+                );
+              },
             );
 
           case ImageExtracted(
@@ -567,12 +643,18 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
               // during the write above, so don't assume it still exists.
               _patchItem(
                 filePath,
-                (item) => item.copyWith(
-                  progress: currentProgress.copyWith(
-                    currentImage: imgCount,
-                    totalImages: totalImages,
-                  ),
-                ),
+                (item) {
+                  // Re-read the latest progress so interleaved page-progress /
+                  // ETA updates that landed during the await aren't rewound by
+                  // the stale `currentProgress` captured before the await.
+                  final base = item.progress ?? currentProgress;
+                  return item.copyWith(
+                    progress: base.copyWith(
+                      currentImage: imgCount,
+                      totalImages: totalImages,
+                    ),
+                  );
+                },
               );
             } catch (e, st) {
               // A single corrupt/undecodable image must not abort the whole
@@ -594,11 +676,14 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
             talker.log("Finished processing $fileName");
             final item = state.items[filePath];
             if (item != null) {
+              // Re-read the latest progress rather than the pre-await capture so
+              // the final image counter / ETA isn't rewound.
+              final base = item.progress ?? currentProgress;
               state = state.copyWith(
                 items: {
                   ...state.items,
                   filePath: item.copyWith(
-                    progress: currentProgress.copyWith(
+                    progress: base.copyWith(
                       done: true,
                       outputDir: outputDir,
                     ),
@@ -613,6 +698,9 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     } finally {
       await iterator.cancel();
       receivePort.close();
+      // Signal that this file's message loop has fully unwound, so a pending
+      // graceful-cancel waiter can stop waiting.
+      if (!task.exited.isCompleted) task.exited.complete();
       _tasks.remove(filePath);
     }
 

@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:alert_info/alert_info.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
@@ -110,14 +109,16 @@ Future<void> _pickFiles(
   );
   if (result == null || result.files.isEmpty) return;
 
+  // Carry only the path (no bytes) — downstream the controller and worker
+  // re-open the file from `path` and never read these bytes, so reading the
+  // whole PDF (up to 500MB) here would just block the UI isolate for nothing.
+  // This mirrors drag-dropped items, which also carry only a path.
   final added = result.files.map((file) {
-    final bytes = File(file.path!).readAsBytesSync();
-    return DropItemFile.fromData(
-      bytes,
+    return DropItemFile(
+      file.path!,
       name: file.name,
       length: file.size,
       mimeType: 'application/pdf',
-      path: file.path,
     );
   }).toList();
 

@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:snag_report_extractor_app/src/shared_preference_provider.dart';
 
 /// Seeds [ThemeModeNotifier]'s initial state. `main()` overrides this with the
 /// value loaded from SharedPreferences before the first frame, so the app
@@ -27,7 +28,7 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
   Future<void> toggleTheme() async {
     final next = state == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
     state = next;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = ref.read(sharedPreferencesProvider);
     await prefs.setBool(_prefsKey, next == ThemeMode.dark);
   }
 }

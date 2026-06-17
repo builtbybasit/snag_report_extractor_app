@@ -2,6 +2,11 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart';
 
+/// Sentinel used by `copyWith` to distinguish "argument not passed" from
+/// "argument explicitly set to null". Without it, nullable fields could never
+/// be reset to null (e.g. clearing `error` on resume).
+const Object _unset = Object();
+
 @immutable
 class PdfFileProgress extends Equatable {
   final String fileName;
@@ -37,19 +42,21 @@ class PdfFileProgress extends Equatable {
     this.lastPageTime,
   }) : pageDurations = pageDurations ?? [];
 
+  /// Nullable fields (`outputDir`, `error`, `lastPageTime`) accept an explicit
+  /// `null` to clear them via the [_unset] sentinel default — `field ?? this`
+  /// would make resetting them to null impossible.
   PdfFileProgress copyWith({
     String? fileName,
-    DateTime? startTime,
     int? currentPage,
     int? totalPages,
     int? currentImage,
     int? totalImages,
     bool? done,
-    String? outputDir,
-    String? error,
+    Object? outputDir = _unset,
+    Object? error = _unset,
     bool? paused,
     List<int>? pageDurations,
-    DateTime? lastPageTime,
+    Object? lastPageTime = _unset,
   }) {
     return PdfFileProgress(
       fileName: fileName ?? this.fileName,
@@ -58,11 +65,14 @@ class PdfFileProgress extends Equatable {
       currentImage: currentImage ?? this.currentImage,
       totalImages: totalImages ?? this.totalImages,
       done: done ?? this.done,
-      outputDir: outputDir ?? this.outputDir,
-      error: error ?? this.error,
+      outputDir:
+          identical(outputDir, _unset) ? this.outputDir : outputDir as String?,
+      error: identical(error, _unset) ? this.error : error as String?,
       paused: paused ?? this.paused,
       pageDurations: pageDurations ?? List.from(this.pageDurations),
-      lastPageTime: lastPageTime ?? this.lastPageTime,
+      lastPageTime: identical(lastPageTime, _unset)
+          ? this.lastPageTime
+          : lastPageTime as DateTime?,
     );
   }
 
@@ -205,7 +215,6 @@ class PdfExtractorState extends Equatable {
     DropItem? currentFile,
     int? processedFiles,
     List<String>? errors,
-    List<String>? outputPaths,
     Map<String, QueuedPdf>? items,
   }) {
     return PdfExtractorState(

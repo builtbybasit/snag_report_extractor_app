@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:snag_report_extractor_app/src/app.dart';
+import 'package:snag_report_extractor_app/src/logging/talker.dart';
+import 'package:snag_report_extractor_app/src/shared_preference_provider.dart';
 import 'package:snag_report_extractor_app/src/theme_mode_provider.dart';
 
 
@@ -15,18 +17,39 @@ void main() async {
   await runZonedGuarded(
     () async {
       WidgetsFlutterBinding.ensureInitialized();
+
+      // * Register error handlers BEFORE runApp so errors during init / the
+      // * first frame are captured. Forward to talker so they are logged in
+      // * all build modes (debugPrint is stripped in release).
+      FlutterError.onError = (FlutterErrorDetails details) {
+        talker.handle(details.exception, details.stack);
+        FlutterError.presentError(details);
+      };
+      ErrorWidget.builder = (FlutterErrorDetails details) {
+        return Scaffold(
+          appBar: AppBar(
+            backgroundColor: Colors.red,
+            title: const Text(
+              "An error occurred",
+              style: TextStyle(color: Colors.white),
+            ),
+          ),
+          body: Center(child: Text(details.toString())),
+        );
+      };
+
       // turn off the # in the URLs on the web
       usePathUrlStrategy();
       // Load the persisted theme before the first frame so the app starts in
       // the saved mode with no light->dark flash.
       final prefs = await SharedPreferences.getInstance();
       final initialTheme = ThemeModeNotifier.readPersisted(prefs);
-      // setup the executor for background tasks
       // * Entry point for the app
       runApp(
         ProviderScope(
           overrides: [
             initialThemeModeProvider.overrideWithValue(initialTheme),
+            sharedPreferencesProvider.overrideWithValue(prefs),
           ],
           // Riverpod 3 enables automatic retry-on-error by default. Our
           // FutureProviders intentionally throw on missing files/dirs, so we
@@ -36,27 +59,10 @@ void main() async {
           child: const MyApp(),
         ),
       );
-
-      // * This code will present some error UI if any uncaught exception happens
-      FlutterError.onError = (FlutterErrorDetails details) {
-        FlutterError.presentError(details);
-      };
-      ErrorWidget.builder = (FlutterErrorDetails details) {
-        return Scaffold(
-          appBar: AppBar(
-            backgroundColor: Colors.red,
-            title: const Text(
-              "An error occured",
-              style: TextStyle(color: Colors.white),
-            ),
-          ),
-          body: Center(child: Text(details.toString())),
-        );
-      };
     },
     (Object error, StackTrace stack) {
-      // Log the error to the console
-      debugPrint(error.toString());
+      // Log the error in all build modes (debugPrint is stripped in release).
+      talker.handle(error, stack);
     },
   );
 }
