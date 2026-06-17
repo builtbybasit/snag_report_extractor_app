@@ -4,7 +4,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_web_plugins/url_strategy.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:snag_report_extractor_app/src/app.dart';
+import 'package:snag_report_extractor_app/src/theme_mode_provider.dart';
 
 
 void main() async {
@@ -15,10 +17,17 @@ void main() async {
       WidgetsFlutterBinding.ensureInitialized();
       // turn off the # in the URLs on the web
       usePathUrlStrategy();
+      // Load the persisted theme before the first frame so the app starts in
+      // the saved mode with no light->dark flash.
+      final prefs = await SharedPreferences.getInstance();
+      final initialTheme = ThemeModeNotifier.readPersisted(prefs);
       // setup the executor for background tasks
       // * Entry point for the app
       runApp(
         ProviderScope(
+          overrides: [
+            initialThemeModeProvider.overrideWithValue(initialTheme),
+          ],
           // Riverpod 3 enables automatic retry-on-error by default. Our
           // FutureProviders intentionally throw on missing files/dirs, so we
           // opt out of retries to surface those errors immediately instead of
