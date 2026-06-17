@@ -62,6 +62,7 @@ void main() async {
     },
     (Object error, StackTrace stack) {
       // Log the error in all build modes (debugPrint is stripped in release).
+      debugPrint("Uncaught error: $error\n$stack");
       talker.handle(error, stack);
     },
   );

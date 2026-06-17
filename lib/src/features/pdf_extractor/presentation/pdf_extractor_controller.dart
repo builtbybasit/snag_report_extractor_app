@@ -636,9 +636,6 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
               final imageFile = File(p.join(outputDir, "image_$imgCount.jpg"));
               await imageFile.writeAsBytes(outputBytes);
 
-              talker.debug(
-                "[$fileName] Extracted image $totalImages/$imgCount",
-              );
               // Re-checked inside _patchItem: the file may have been removed
               // during the write above, so don't assume it still exists.
               _patchItem(
