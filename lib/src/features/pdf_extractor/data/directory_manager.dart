@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 import 'package:directory_bookmarks/directory_bookmarks.dart';
+import 'package:snag_report_extractor_app/src/logging/talker.dart';
 
 class DirectoryManagerException implements Exception {
   final String message;
@@ -93,9 +94,21 @@ class DirectoryManager extends Notifier<String?> {
 
   @override
   String? build() {
-    _loadSavedDirectory();
+    // The persisted directory load is inherently async (security-scoped
+    // bookmark resolution, SharedPreferences, directory existence checks), so
+    // build() returns a well-defined synchronous initial state (null = no
+    // directory selected). The async load is kicked off explicitly via init()
+    // and is mount-guarded so it never writes to a disposed notifier.
+    init();
     return null;
   }
+
+  /// Loads the persisted directory and updates [state] when it resolves.
+  ///
+  /// Safe to await (deterministic) and safe to fire-and-forget: every state
+  /// write is guarded by [Ref.mounted], so a disposal mid-load cannot mutate a
+  /// stale notifier.
+  Future<void> init() => _loadSavedDirectory();
 
   String _normalizePath(String path) {
     return p.normalize(path);
@@ -124,6 +137,7 @@ class DirectoryManager extends Notifier<String?> {
       }
       final path = bookmark.path;
       if (await checkDirectoryExists(path)) {
+        if (!ref.mounted) return;
         state = path;
       }
     }
@@ -133,6 +147,7 @@ class DirectoryManager extends Notifier<String?> {
       return;
     }
     if (await checkDirectoryExists(dir)) {
+      if (!ref.mounted) return;
       state = dir;
     }
   }
@@ -151,7 +166,7 @@ class DirectoryManager extends Notifier<String?> {
 
   Future<void> _saveBookmark(String path) async {
     if (Platform.isMacOS) {
-      final bookmark = await DirectoryBookmarkHandler.saveBookmark(
+      await DirectoryBookmarkHandler.saveBookmark(
         path,
         metadata: {'lastAccessed': DateTime.now().toIso8601String()},
       );
@@ -178,8 +193,8 @@ class DirectoryManager extends Notifier<String?> {
         await _saveDirectory(directory);
         state = directory;
       }
-    } catch (e) {
-      print("Error selecting directory: $e");
+    } catch (e, st) {
+      talker.error("Error selecting directory", e, st);
     }
   }
 
@@ -208,10 +223,10 @@ class DirectoryManager extends Notifier<String?> {
 
   Future<List<DocumentFile>> listDocs(String directory) async {
     final normalizedDir = _normalizePath(directory);
-    print("Listing files in directory: $normalizedDir");
+    talker.debug("Listing files in directory: $normalizedDir");
     final currentDirectory = getDirectory();
     final dirUri = await _getDirectoryUri(currentDirectory, normalizedDir);
-    print("Directory URI: $dirUri");
+    talker.debug("Directory URI: $dirUri");
     if (!await checkDirectoryExists(dirUri)) {
       throw Exception("Directory not found: $normalizedDir");
     }
@@ -239,7 +254,7 @@ class DirectoryManager extends Notifier<String?> {
     final dir = Directory(dirUri);
     final files = await dir.list().toList();
     return files.map((file) {
-      final name = file.path.split('/').last;
+      final name = p.basename(file.path);
       final isDir = file.statSync().type == FileSystemEntityType.directory;
       final length = isDir ? 0 : file.statSync().size;
       final lastModified = file.statSync().modified.millisecondsSinceEpoch;
@@ -290,7 +305,7 @@ class DirectoryManager extends Notifier<String?> {
   Future<DocumentFile> getFileByName(String directory, String fileName) async {
     final files = await listFiles(directory);
     final file = files.firstWhere((file) => file.name == fileName);
-    print("getFileByName: $file");
+    talker.debug("getFileByName: $file");
     return file;
   }
 
@@ -310,7 +325,7 @@ class DirectoryManager extends Notifier<String?> {
       }
       return dir.uri;
     }
-    return "$currentDirectory/$directory";
+    return p.join(currentDirectory, directory);
   }
 
   Future<void> writeFile(

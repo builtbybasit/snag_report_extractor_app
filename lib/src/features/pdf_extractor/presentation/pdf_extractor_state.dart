@@ -1,9 +1,9 @@
-
-import 'dart:isolate';
-
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:equatable/equatable.dart';
+import 'package:flutter/foundation.dart';
 
-class PdfFileProgress {
+@immutable
+class PdfFileProgress extends Equatable {
   final String fileName;
   final int currentPage;
   final int totalPages;
@@ -19,9 +19,6 @@ class PdfFileProgress {
   /// so resuming re-spawns the worker with `resumeFromImage: currentImage`.
   final bool paused;
 
-  /// Timestamp when this file started processing
-  final Isolate? isolate;
-
   // --- ETA tracking ---
   final List<int> pageDurations; // stores ms/page
   final DateTime? lastPageTime;
@@ -36,7 +33,6 @@ class PdfFileProgress {
     this.done = false,
     this.error,
     this.paused = false,
-    this.isolate,
     List<int>? pageDurations,
     this.lastPageTime,
   }) : pageDurations = pageDurations ?? [];
@@ -52,7 +48,6 @@ class PdfFileProgress {
     String? outputDir,
     String? error,
     bool? paused,
-    Isolate? isolate,
     List<int>? pageDurations,
     DateTime? lastPageTime,
   }) {
@@ -66,7 +61,6 @@ class PdfFileProgress {
       outputDir: outputDir ?? this.outputDir,
       error: error ?? this.error,
       paused: paused ?? this.paused,
-      isolate: isolate ?? this.isolate,
       pageDurations: pageDurations ?? List.from(this.pageDurations),
       lastPageTime: lastPageTime ?? this.lastPageTime,
     );
@@ -102,12 +96,28 @@ class PdfFileProgress {
     return Duration(milliseconds: (remainingPages * avgMs).round());
   }
 
+  // Equatable handles List deep-equality for `pageDurations` automatically.
+  @override
+  List<Object?> get props => [
+        fileName,
+        currentPage,
+        totalPages,
+        currentImage,
+        totalImages,
+        outputDir,
+        done,
+        error,
+        paused,
+        pageDurations,
+        lastPageTime,
+      ];
 }
 
 /// A single PDF in the queue, bundling its [DropItem] with all per-file state
 /// (pre-scan counts, extraction progress, and when it was added). Replaces the
 /// former parallel maps keyed by file path.
-class QueuedPdf {
+@immutable
+class QueuedPdf extends Equatable {
   final DropItem file;
 
   /// When the file was added to the queue. Drives the "Added … ago" subtitle.
@@ -126,7 +136,7 @@ class QueuedPdf {
   /// Extraction progress; `null` until extraction starts for this file.
   final PdfFileProgress? progress;
 
-  QueuedPdf({
+  const QueuedPdf({
     required this.file,
     required this.addedAt,
     this.sizeBytes,
@@ -149,9 +159,23 @@ class QueuedPdf {
       progress: progress ?? this.progress,
     );
   }
+
+  // `DropItem` has identity semantics (no value ==), so compare it by its
+  // stable [path] rather than by reference, which would otherwise defeat
+  // equality on every rebuild.
+  @override
+  List<Object?> get props => [
+        file.path,
+        addedAt,
+        sizeBytes,
+        pageCount,
+        imageCount,
+        progress,
+      ];
 }
 
-class PdfExtractorState {
+@immutable
+class PdfExtractorState extends Equatable {
   final bool isDragging;
   final bool isProcessing;
   final DropItem? currentFile;
@@ -163,7 +187,7 @@ class PdfExtractorState {
   /// parallel structures into one.
   final Map<String, QueuedPdf> items;
 
-  PdfExtractorState({
+  const PdfExtractorState({
     this.isDragging = false,
     this.isProcessing = false,
     this.currentFile,
@@ -198,4 +222,17 @@ class PdfExtractorState {
   int get completedCount => items.values
       .where((i) => i.progress?.done == true && i.progress?.error == null)
       .length;
+
+  // `currentFile` is a `DropItem` (identity-only); compare by path so an
+  // unchanged file doesn't read as a difference. Equatable deep-compares the
+  // `errors` list and the `items` map (whose values are themselves Equatable).
+  @override
+  List<Object?> get props => [
+        isDragging,
+        isProcessing,
+        currentFile?.path,
+        processedFiles,
+        errors,
+        items,
+      ];
 }

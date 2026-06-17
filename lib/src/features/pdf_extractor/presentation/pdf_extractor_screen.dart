@@ -10,7 +10,6 @@ import 'package:snag_report_extractor_app/src/common_widgets/dashed_rect.dart';
 import 'package:snag_report_extractor_app/src/constants/app_sizes.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/directory_manager.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/pdf_extractor_controller.dart';
-import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/pdf_extractor_state.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/pdf_file_card.dart';
 import 'package:snag_report_extractor_app/src/features/pdf_extractor/presentation/queue_count_badge.dart';
@@ -22,13 +21,14 @@ class PdfExtractorScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final controller = ref.read(
-      pdfExtractorScreenControllerProvider.notifier,
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Whether the queue is non-empty: this only flips when files are added to
+    // or removed from an empty/non-empty queue, so the surrounding column does
+    // not rebuild on every progress tick.
+    final hasFiles = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.items.isNotEmpty),
     );
-    final state = ref.watch(pdfExtractorScreenControllerProvider);
-    final directoryManager = ref.watch(directoryManagerProvider);
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
 
     return Scaffold(
       appBar: _buildAppBar(context, ref, isDark),
@@ -40,70 +40,23 @@ class PdfExtractorScreen extends ConsumerWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _outputDirectorySection(context, ref, directoryManager),
+                const _OutputDirectorySection(),
                 gapH24,
-                _dropZone(context, controller, state, isDark),
+                _DropZone(isDark: isDark),
                 gapH24,
-                if (state.files.isNotEmpty) ...[
-                  _queueHeader(context, ref, state),
+                if (hasFiles) ...[
+                  const _QueueHeader(),
                   gapH12,
-                  _queueList(context, controller, state),
+                  const _QueueList(),
                   gapH16,
                 ],
-                _bottomBar(context, ref, controller, state, directoryManager),
+                const _BottomBar(),
                 gapH8,
               ],
             ),
           ),
         ),
       ),
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Queue list (reorderable)
-  // ---------------------------------------------------------------------------
-
-  /// The queue rendered as a reorderable list. Each row carries a grip handle on
-  /// its left edge (grab-to-drag); dragging a file changes its processing order,
-  /// and dragging the file that's currently extracting below another pending
-  /// file pauses it (it resumes when it returns to the top).
-  Widget _queueList(
-    BuildContext context,
-    PdfExtractorScreenController controller,
-    PdfExtractorState state,
-  ) {
-    final items = state.items.values.toList();
-
-    return ReorderableListView.builder(
-      shrinkWrap: true,
-      primary: false,
-      physics: const NeverScrollableScrollPhysics(),
-      buildDefaultDragHandles: false,
-      itemCount: items.length,
-      // The default proxy wraps the dragged item in an opaque (white) Material;
-      // use a transparent one so the card keeps its own rounded background while
-      // being dragged.
-      proxyDecorator: (child, index, animation) =>
-          Material(type: MaterialType.transparency, child: child),
-      // ignore: deprecated_member_use
-      onReorder: controller.reorderQueue,
-      itemBuilder: (context, i) {
-        final item = items[i];
-        // The grab handle lives on the card's left border (see PdfFileCard);
-        // reorderIndex wires it to this list's drag listener.
-        return PdfFileCard(
-          key: ValueKey(item.file.path),
-          reorderIndex: i,
-          file: item.file,
-          progress: item.progress,
-          imageCount: item.imageCount,
-          pageCount: item.pageCount,
-          addedAt: item.addedAt,
-          sizeBytes: item.sizeBytes,
-          onDelete: () => controller.removeFromQueue(item.file),
-        );
-      },
     );
   }
 
@@ -198,16 +151,18 @@ class PdfExtractorScreen extends ConsumerWidget {
       ),
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Output directory
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Output directory
+// -----------------------------------------------------------------------------
 
-  Widget _outputDirectorySection(
-    BuildContext context,
-    WidgetRef ref,
-    String? directory,
-  ) {
+class _OutputDirectorySection extends ConsumerWidget {
+  const _OutputDirectorySection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final directory = ref.watch(directoryManagerProvider);
     final theme = Theme.of(context);
     final hasDir = directory != null && directory.isNotEmpty;
     void pick() =>
@@ -288,20 +243,28 @@ class PdfExtractorScreen extends ConsumerWidget {
       ),
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Drop zone
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Drop zone
+// -----------------------------------------------------------------------------
 
-  Widget _dropZone(
-    BuildContext context,
-    PdfExtractorScreenController controller,
-    PdfExtractorState state,
-    bool isDark,
-  ) {
+class _DropZone extends ConsumerWidget {
+  const _DropZone({required this.isDark});
+
+  final bool isDark;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller =
+        ref.read(pdfExtractorScreenControllerProvider.notifier);
+    // Only the dashed border / fill depend on the drag state, so isolate it.
+    final isDragging = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.isDragging),
+    );
     final theme = Theme.of(context);
     final accent = theme.colorScheme.primary;
-    final borderColor = state.isDragging ? accent : theme.dividerColor;
+    final borderColor = isDragging ? accent : theme.dividerColor;
 
     return DropTarget(
       onDragEntered: (_) => controller.startDragging(),
@@ -318,14 +281,14 @@ class PdfExtractorScreen extends ConsumerWidget {
         onTap: () => _pickFiles(context, controller),
         child: DashedRect(
           color: borderColor,
-          strokeWidth: state.isDragging ? 2 : 1.5,
+          strokeWidth: isDragging ? 2 : 1.5,
           radius: 16,
           child: Container(
             height: 220,
             decoration: BoxDecoration(
               // Subtle always-on fill so the drop area reads as a distinct
               // panel against the page, deepening while a file is dragged over.
-              color: state.isDragging
+              color: isDragging
                   ? accent.withValues(alpha: isDark ? 0.12 : 0.07)
                   : accent.withValues(alpha: isDark ? 0.05 : 0.03),
               borderRadius: BorderRadius.circular(16),
@@ -374,43 +337,57 @@ class PdfExtractorScreen extends ConsumerWidget {
       ),
     );
   }
+}
 
-  Future<void> _pickFiles(
-    BuildContext context,
-    PdfExtractorScreenController controller,
-  ) async {
-    final result = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['pdf'],
-      allowMultiple: true,
+Future<void> _pickFiles(
+  BuildContext context,
+  PdfExtractorScreenController controller,
+) async {
+  final result = await FilePicker.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['pdf'],
+    allowMultiple: true,
+  );
+  if (result == null || result.files.isEmpty) return;
+
+  final added = result.files.map((file) {
+    final bytes = File(file.path!).readAsBytesSync();
+    return DropItemFile.fromData(
+      bytes,
+      name: file.name,
+      length: file.size,
+      mimeType: 'application/pdf',
+      path: file.path,
     );
-    if (result == null || result.files.isEmpty) return;
+  }).toList();
 
-    final added = result.files.map((file) {
-      final bytes = File(file.path!).readAsBytesSync();
-      return DropItemFile.fromData(
-        bytes,
-        name: file.name,
-        length: file.size,
-        mimeType: 'application/pdf',
-        path: file.path,
-      );
-    }).toList();
-
-    final count = controller.addToQueue(added);
-    if (context.mounted) {
-      _reportAddResult(context, requested: added.length, added: count);
-    }
+  final count = controller.addToQueue(added);
+  if (context.mounted) {
+    _reportAddResult(context, requested: added.length, added: count);
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Queue header
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Queue header
+// -----------------------------------------------------------------------------
 
-  Widget _queueHeader(
-      BuildContext context, WidgetRef ref, PdfExtractorState state) {
+class _QueueHeader extends ConsumerWidget {
+  const _QueueHeader();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
-    final hasCompleted = state.completedCount > 0;
+    // Select only the primitives this row renders / enables on, so a progress
+    // tick that doesn't change any of them won't rebuild the header.
+    final fileCount = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.items.length),
+    );
+    final isProcessing = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.isProcessing),
+    );
+    final hasCompleted = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.completedCount > 0),
+    );
 
     // The title group is Expanded so it yields width to the right-aligned
     // action buttons instead of overflowing on narrow windows.
@@ -432,17 +409,17 @@ class PdfExtractorScreen extends ConsumerWidget {
                 ),
               ),
               gapW8,
-              QueueCountBadge(count: state.files.length),
+              QueueCountBadge(count: fileCount),
             ],
           ),
         ),
         gapW8,
         OutlinedButton.icon(
-          onPressed: (state.isProcessing || !hasCompleted)
+          onPressed: (isProcessing || !hasCompleted)
               ? null
-              : () =>
-                  ref.read(pdfExtractorScreenControllerProvider.notifier)
-                      .clearCompleted(),
+              : () => ref
+                  .read(pdfExtractorScreenControllerProvider.notifier)
+                  .clearCompleted(),
           icon: const Icon(Icons.cleaning_services_rounded, size: 18),
           label: const Text("Clear Completed"),
           style: OutlinedButton.styleFrom(
@@ -452,7 +429,7 @@ class PdfExtractorScreen extends ConsumerWidget {
         ),
         gapW8,
         OutlinedButton.icon(
-          onPressed: state.isProcessing
+          onPressed: isProcessing
               ? null
               : () => _confirmClearQueue(context, ref),
           icon: const Icon(Icons.delete_outline_rounded, size: 18),
@@ -465,61 +442,176 @@ class PdfExtractorScreen extends ConsumerWidget {
       ],
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Bottom status + Extract bar
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Queue list (reorderable)
+// -----------------------------------------------------------------------------
 
-  Widget _bottomBar(
-    BuildContext context,
-    WidgetRef ref,
-    PdfExtractorScreenController controller,
-    PdfExtractorState state,
-    String? directory,
-  ) {
+/// The queue rendered as a reorderable list. Each row carries a grip handle on
+/// its left edge (grab-to-drag); dragging a file changes its processing order,
+/// and dragging the file that's currently extracting below another pending
+/// file pauses it (it resumes when it returns to the top).
+class _QueueList extends ConsumerWidget {
+  const _QueueList();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller =
+        ref.read(pdfExtractorScreenControllerProvider.notifier);
+    // Select a stable String fingerprint of the ordered keys. `select` rebuilds
+    // on `!=`, and Strings have value equality, so this rebuilds the list only
+    // when files are added/removed/reordered — a per-file progress tick (which
+    // leaves the key order unchanged) does not. Each row then watches its own
+    // item via [_QueueListItem]. (A `toList()` would be a fresh List instance
+    // each tick and never compare equal, so it can't be selected directly.)
+    // Joined with NUL, which can't appear in a filesystem path on any OS, so
+    // the round-trip through split is lossless even for paths with spaces.
+    final pathsKey = ref.watch(
+      pdfExtractorScreenControllerProvider
+          .select((s) => s.items.keys.join('\u0000')),
+    );
+    final paths =
+        pathsKey.isEmpty ? const <String>[] : pathsKey.split('\u0000');
+
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      primary: false,
+      physics: const NeverScrollableScrollPhysics(),
+      buildDefaultDragHandles: false,
+      itemCount: paths.length,
+      // The default proxy wraps the dragged item in an opaque (white) Material;
+      // use a transparent one so the card keeps its own rounded background while
+      // being dragged.
+      proxyDecorator: (child, index, animation) =>
+          Material(type: MaterialType.transparency, child: child),
+      // ignore: deprecated_member_use
+      onReorder: controller.reorderQueue,
+      itemBuilder: (context, i) {
+        final path = paths[i];
+        return _QueueListItem(
+          key: ValueKey(path),
+          path: path,
+          reorderIndex: i,
+        );
+      },
+    );
+  }
+}
+
+/// One row of the queue. Watches only its own item (keyed by [path]) so a
+/// progress update on a single file rebuilds just this card, not the whole
+/// list or screen.
+class _QueueListItem extends ConsumerWidget {
+  const _QueueListItem({
+    super.key,
+    required this.path,
+    required this.reorderIndex,
+  });
+
+  final String path;
+  final int reorderIndex;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final item = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.items[path]),
+    );
+    // Defensive: if the item was just removed, render nothing this frame.
+    if (item == null) return const SizedBox.shrink();
+
+    final controller =
+        ref.read(pdfExtractorScreenControllerProvider.notifier);
+
+    // The grab handle lives on the card's left border (see PdfFileCard);
+    // reorderIndex wires it to the list's drag listener.
+    return PdfFileCard(
+      reorderIndex: reorderIndex,
+      file: item.file,
+      progress: item.progress,
+      imageCount: item.imageCount,
+      pageCount: item.pageCount,
+      addedAt: item.addedAt,
+      sizeBytes: item.sizeBytes,
+      onDelete: () => controller.removeFromQueue(item.file),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Bottom status + Extract bar
+// -----------------------------------------------------------------------------
+
+class _BottomBar extends StatelessWidget {
+  const _BottomBar();
+
+  @override
+  Widget build(BuildContext context) {
     // One full-width white panel holding the status on the left and the
-    // Extract button on the right.
+    // Extract button on the right. Status and button each watch their own
+    // narrow slices of state so a progress tick only rebuilds what it touches.
     return _panel(
       context,
       padding: const EdgeInsets.all(16),
-      child: Row(
+      child: const Row(
         children: [
-          Expanded(child: _statusContent(context, state)),
+          Expanded(child: _StatusContent()),
           gapW16,
-          _extractButton(context, ref, controller, state, directory),
+          _ExtractButton(),
         ],
       ),
     );
   }
+}
 
-  Widget _statusContent(BuildContext context, PdfExtractorState state) {
+class _StatusContent extends ConsumerWidget {
+  const _StatusContent();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final accent = theme.colorScheme.primary;
+
+    // Select each primitive used to render the status independently.
+    final isProcessing = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.isProcessing),
+    );
+    final processedFiles = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.processedFiles),
+    );
+    final fileCount = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.items.length),
+    );
+    final errorCount = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.errors.length),
+    );
+    final completedCount = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.completedCount),
+    );
 
     IconData icon;
     String title;
     String subtitle;
     Color color = accent;
 
-    if (state.isProcessing) {
+    if (isProcessing) {
       icon = Icons.autorenew_rounded;
       title = "Extracting…";
-      subtitle = "${state.processedFiles} of ${state.files.length} processed";
-    } else if (state.errors.isNotEmpty) {
+      subtitle = "$processedFiles of $fileCount processed";
+    } else if (errorCount > 0) {
       icon = Icons.error_outline_rounded;
       title = "Completed with errors";
-      subtitle = "${state.errors.length} file(s) failed";
+      subtitle = "$errorCount file(s) failed";
       color = Colors.red.shade400;
-    } else if (state.completedCount > 0) {
+    } else if (completedCount > 0) {
       icon = Icons.task_alt_rounded;
       title = "Extraction complete!";
-      subtitle =
-          "${state.completedCount} file(s) processed successfully";
+      subtitle = "$completedCount file(s) processed successfully";
       color = Colors.green;
-    } else if (state.files.isNotEmpty) {
+    } else if (fileCount > 0) {
       icon = Icons.playlist_add_check_rounded;
       title = "Ready to extract";
-      subtitle = "${state.files.length} file(s) in queue";
+      subtitle = "$fileCount file(s) in queue";
     } else {
       icon = Icons.description_outlined;
       title = "No files yet";
@@ -562,15 +654,22 @@ class PdfExtractorScreen extends ConsumerWidget {
       ],
     );
   }
+}
 
-  Widget _extractButton(
-    BuildContext context,
-    WidgetRef ref,
-    PdfExtractorScreenController controller,
-    PdfExtractorState state,
-    String? directory,
-  ) {
-    final disabled = state.isProcessing || state.files.isEmpty;
+class _ExtractButton extends ConsumerWidget {
+  const _ExtractButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Only isProcessing and emptiness gate the button's enabled state and
+    // label, so select just those.
+    final isProcessing = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.isProcessing),
+    );
+    final isEmpty = ref.watch(
+      pdfExtractorScreenControllerProvider.select((s) => s.items.isEmpty),
+    );
+    final disabled = isProcessing || isEmpty;
 
     return SizedBox(
       width: 230,
@@ -580,7 +679,7 @@ class PdfExtractorScreen extends ConsumerWidget {
       child: ElevatedButton(
         onPressed: disabled
             ? null
-            : () => _runExtraction(context, ref, controller, directory),
+            : () => _runExtraction(context, ref),
         style: ElevatedButton.styleFrom(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           shape: RoundedRectangleBorder(
@@ -599,7 +698,7 @@ class PdfExtractorScreen extends ConsumerWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    if (state.isProcessing)
+                    if (isProcessing)
                       SizedBox(
                         width: 18,
                         height: 18,
@@ -612,13 +711,13 @@ class PdfExtractorScreen extends ConsumerWidget {
                       const Icon(Icons.play_arrow_rounded, size: 22),
                     gapW8,
                     Text(
-                      state.isProcessing ? "Extracting…" : "Extract",
+                      isProcessing ? "Extracting…" : "Extract",
                       style: const TextStyle(fontSize: 16),
                     ),
                   ],
                 ),
                 // Subtitle only when idle — no file count while extracting.
-                if (!state.isProcessing) ...[
+                if (!isProcessing) ...[
                   const SizedBox(height: 2),
                   Text(
                     "Start processing files",
@@ -636,135 +735,136 @@ class PdfExtractorScreen extends ConsumerWidget {
       ),
     );
   }
+}
 
-  // ---------------------------------------------------------------------------
-  // Actions / helpers
-  // ---------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Actions / helpers
+// -----------------------------------------------------------------------------
 
-  Future<void> _runExtraction(
-    BuildContext context,
-    WidgetRef ref,
-    PdfExtractorScreenController controller,
-    String? directory,
-  ) async {
-    if (directory == null || directory.isEmpty) {
-      AlertInfo.show(
-        context: context,
-        typeInfo: TypeInfo.error,
-        position: MessagePosition.bottom,
-        text: "Please select an output directory.",
-      );
-      return;
-    }
-
-    await controller.processPdfFiles();
-    if (!context.mounted) return;
-
-    final updated = ref.read(pdfExtractorScreenControllerProvider);
-    if (updated.errors.isEmpty) {
-      AlertInfo.show(
-        context: context,
-        typeInfo: TypeInfo.success,
-        position: MessagePosition.bottom,
-        text: "All files processed successfully.",
-      );
-      return;
-    }
-
+Future<void> _runExtraction(
+  BuildContext context,
+  WidgetRef ref,
+) async {
+  final directory = ref.read(directoryManagerProvider);
+  if (directory == null || directory.isEmpty) {
     AlertInfo.show(
       context: context,
       typeInfo: TypeInfo.error,
       position: MessagePosition.bottom,
-      text: "${updated.errors.length} files failed to process.",
+      text: "Please select an output directory.",
     );
+    return;
   }
 
-  Future<void> _confirmClearQueue(BuildContext context, WidgetRef ref) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text("Clear queue?"),
-        content: const Text(
-          "This removes all files from the queue. Files already extracted to "
-          "disk are not affected.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text("Cancel"),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text("Clear all"),
-          ),
-        ],
-      ),
-    );
+  await ref
+      .read(pdfExtractorScreenControllerProvider.notifier)
+      .processPdfFiles();
+  if (!context.mounted) return;
 
-    if (confirmed == true) {
-      ref.read(pdfExtractorScreenControllerProvider.notifier).clearQueue();
-    }
-  }
-
-  /// Toasts the outcome of an add: how many were queued, and how many were
-  /// skipped because they were already in the queue.
-  void _reportAddResult(
-    BuildContext context, {
-    required int requested,
-    required int added,
-  }) {
-    final skipped = requested - added;
-
-    if (added == 0) {
-      AlertInfo.show(
-        context: context,
-        typeInfo: TypeInfo.warning,
-        position: MessagePosition.bottom,
-        text: skipped == 1
-            ? "That file is already in the queue."
-            : "Those files are already in the queue.",
-      );
-      return;
-    }
-
-    final addedText = "$added ${added == 1 ? 'file' : 'files'} added to queue";
+  final updated = ref.read(pdfExtractorScreenControllerProvider);
+  if (updated.errors.isEmpty) {
     AlertInfo.show(
       context: context,
       typeInfo: TypeInfo.success,
       position: MessagePosition.bottom,
-      text: skipped > 0
-          ? "$addedText ($skipped duplicate skipped)."
-          : "$addedText.",
+      text: "All files processed successfully.",
     );
+    return;
   }
 
-  /// A white/surface rounded panel with a subtle border (and light shadow in
-  /// light mode), used for the major content sections.
-  Widget _panel(
-    BuildContext context, {
-    required Widget child,
-    EdgeInsets padding = const EdgeInsets.all(20),
-  }) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    return Container(
-      width: double.infinity,
-      padding: padding,
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
-        boxShadow: isDark
-            ? null
-            : [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 12,
-                  offset: const Offset(0, 3),
-                ),
-              ],
+  AlertInfo.show(
+    context: context,
+    typeInfo: TypeInfo.error,
+    position: MessagePosition.bottom,
+    text: "${updated.errors.length} files failed to process.",
+  );
+}
+
+Future<void> _confirmClearQueue(BuildContext context, WidgetRef ref) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text("Clear queue?"),
+      content: const Text(
+        "This removes all files from the queue. Files already extracted to "
+        "disk are not affected.",
       ),
-      child: child,
-    );
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: const Text("Cancel"),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: const Text("Clear all"),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed == true) {
+    ref.read(pdfExtractorScreenControllerProvider.notifier).clearQueue();
   }
+}
+
+/// Toasts the outcome of an add: how many were queued, and how many were
+/// skipped because they were already in the queue.
+void _reportAddResult(
+  BuildContext context, {
+  required int requested,
+  required int added,
+}) {
+  final skipped = requested - added;
+
+  if (added == 0) {
+    AlertInfo.show(
+      context: context,
+      typeInfo: TypeInfo.warning,
+      position: MessagePosition.bottom,
+      text: skipped == 1
+          ? "That file is already in the queue."
+          : "Those files are already in the queue.",
+    );
+    return;
+  }
+
+  final addedText = "$added ${added == 1 ? 'file' : 'files'} added to queue";
+  AlertInfo.show(
+    context: context,
+    typeInfo: TypeInfo.success,
+    position: MessagePosition.bottom,
+    text: skipped > 0
+        ? "$addedText ($skipped duplicate skipped)."
+        : "$addedText.",
+  );
+}
+
+/// A white/surface rounded panel with a subtle border (and light shadow in
+/// light mode), used for the major content sections.
+Widget _panel(
+  BuildContext context, {
+  required Widget child,
+  EdgeInsets padding = const EdgeInsets.all(20),
+}) {
+  final theme = Theme.of(context);
+  final isDark = theme.brightness == Brightness.dark;
+  return Container(
+    width: double.infinity,
+    padding: padding,
+    decoration: BoxDecoration(
+      color: theme.cardColor,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: theme.dividerColor.withValues(alpha: 0.6)),
+      boxShadow: isDark
+          ? null
+          : [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.04),
+                blurRadius: 12,
+                offset: const Offset(0, 3),
+              ),
+            ],
+    ),
+    child: child,
+  );
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
@@ -8,6 +9,12 @@ import 'package:snag_report_extractor_app/src/features/pdf_extractor/data/pdf_wo
 
 const String _defaultCaption =
     'As Indicated by the Highlights in the picture';
+
+/// Max images the worker may have sent but not yet had acked before it blocks.
+/// Bounds in-flight image bytes buffered in the receive port while still
+/// allowing the worker to run a few images ahead of the (slower) main-isolate
+/// render/encode/write step.
+const int _imageAckWindow = 8;
 
 /// Isolate entry point: extracts captioned snag photos from [data]["path"]
 /// using the vendored pure-Dart engine and streams them to the main isolate.
@@ -26,6 +33,14 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
   // extracted and written by a previous (paused) run, so we re-walk the document
   // to keep the counter aligned but skip re-sending them. 0 means a fresh run.
   final int resumeFromImage = (data["resumeFromImage"] as int?) ?? 0;
+
+  // Back-channel for image backpressure: the main isolate sends one ack per
+  // consumed image; the worker blocks once [_imageAckWindow] images are
+  // outstanding so it can't flood the receive port with multi-MB byte arrays.
+  final ackPort = ReceivePort();
+  final acks = StreamIterator<dynamic>(ackPort);
+  sendPort.send(WorkerReady(ackPort.sendPort));
+  int credits = _imageAckWindow;
 
   MuPdfRepository? repo;
   try {
@@ -77,9 +92,16 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
         final n = imageCounter++;
         if (n <= resumeFromImage) continue;
 
+        // Backpressure: once the window is exhausted, wait for the main isolate
+        // to ack a previously sent image before putting another on the wire.
+        if (credits == 0) {
+          await acks.moveNext();
+          credits++;
+        }
         sendPort.send(
           ImageExtracted(bytes, caption, n, totalImages),
         );
+        credits--;
       }
     }
 
@@ -87,6 +109,8 @@ Future<void> extractPdfWorker(Map<String, dynamic> data) async {
   } catch (e) {
     sendPort.send(ExtractionFailed(e.toString()));
   } finally {
+    await acks.cancel();
+    ackPort.close();
     repo?.close();
   }
 }

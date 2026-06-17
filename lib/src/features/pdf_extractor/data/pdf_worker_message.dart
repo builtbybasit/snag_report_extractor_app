@@ -1,12 +1,27 @@
+import 'dart:isolate';
 import 'dart:typed_data';
 
 /// Typed message protocol streamed from [extractPdfWorker] (the extraction
 /// isolate) back to the controller on the main isolate.
 ///
 /// Instances are sent across the isolate `SendPort`, so every field is a
-/// sendable type (int / String / Uint8List).
+/// sendable type (int / String / Uint8List / SendPort).
 sealed class PdfWorkerMessage {
   const PdfWorkerMessage();
+}
+
+/// First message the worker sends. Carries the back-channel [ackPort] the main
+/// isolate replies on to grant the worker permission to send more images.
+///
+/// This is the handshake for image backpressure: the worker streams images
+/// faster than the main isolate can render/encode/write them, so without a
+/// credit window the in-flight image bytes pile up in the receive port. The
+/// main isolate sends one ack per consumed [ImageExtracted]; the worker only
+/// blocks once a small window of unacked images is outstanding.
+class WorkerReady extends PdfWorkerMessage {
+  final SendPort ackPort;
+
+  const WorkerReady(this.ackPort);
 }
 
 /// Progress for a single page: `page` of `pageCount` has been parsed.

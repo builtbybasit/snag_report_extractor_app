@@ -24,6 +24,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
 
   cupertino_icons: ^1.0.9
   directory_bookmarks:
@@ -48,6 +50,7 @@ dependencies:
   # image bbox, ToUnicode text decoding). Upstream is MIT-licensed.
   dart_mupdf_donut:
     path: packages/dart_mupdf_donut
+  equatable: ^2.0.8
 
 dev_dependencies:
   flutter_test:
