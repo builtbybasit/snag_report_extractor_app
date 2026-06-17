@@ -6,6 +6,7 @@ import 'dart:isolate';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
+import 'package:pool/pool.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/painting.dart' as ui;
 import 'dart:typed_data';
@@ -56,6 +57,13 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
   /// `_pauseRequested` maps so reorder/remove can't leave them desynced and
   /// cleanup removes exactly one entry.
   final Map<String, ExtractionTask> _tasks = {};
+
+  /// Caps how many pre-scan isolates run at once. Dropping a large batch of
+  /// files would otherwise spawn one `Isolate.run(scanPdf)` per file all at
+  /// once (CPU oversubscription, memory spike, many open file handles). Bound
+  /// to the CPU count minus one — leaving a core for the UI/render isolate —
+  /// clamped to a small ceiling. Excess scans queue and start as slots free up.
+  final Pool _scanPool = Pool((Platform.numberOfProcessors - 1).clamp(1, 4));
 
   @override
   PdfExtractorState build() {
@@ -198,7 +206,8 @@ class PdfExtractorScreenController extends Notifier<PdfExtractorState> {
     // created with null counts in addToQueue, so nothing to set here.
 
     try {
-      final result = await Isolate.run(() => scanPdf(path));
+      final result =
+          await _scanPool.withResource(() => Isolate.run(() => scanPdf(path)));
       // The file may have been removed from the queue while we were scanning.
       if (!state.items.containsKey(path)) return;
       talker.debug(

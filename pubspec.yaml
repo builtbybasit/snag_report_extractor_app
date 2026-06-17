@@ -51,6 +51,7 @@ dependencies:
   dart_mupdf_donut:
     path: packages/dart_mupdf_donut
   equatable: ^2.0.8
+  pool: ^1.5.2
 
 dev_dependencies:
   flutter_test:
