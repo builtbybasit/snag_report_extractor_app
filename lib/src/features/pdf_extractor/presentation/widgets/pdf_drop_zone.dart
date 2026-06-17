@@ -82,7 +82,7 @@ class PdfDropZone extends ConsumerWidget {
                   ),
                   gapH8,
                   Text(
-                    "Supports PDF files up to 500MB",
+                    "Supports multiple PDF files",
                     style: TextStyle(
                       fontSize: 12.5,
                       color: theme.colorScheme.onSurfaceVariant,
@@ -111,8 +111,8 @@ Future<void> _pickFiles(
 
   // Carry only the path (no bytes) — downstream the controller and worker
   // re-open the file from `path` and never read these bytes, so reading the
-  // whole PDF (up to 500MB) here would just block the UI isolate for nothing.
-  // This mirrors drag-dropped items, which also carry only a path.
+  // whole PDF here would just block the UI isolate for nothing. This mirrors
+  // drag-dropped items, which also carry only a path.
   final added = result.files.map((file) {
     return DropItemFile(
       file.path!,
